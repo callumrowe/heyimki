@@ -1,0 +1,265 @@
+#!/usr/bin/env bash
+# ki — manage the Ki stack on your VPS
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Host config: set KI_HOST in your shell, or drop the VPS IP/hostname
+# into a .ki-host file at the repo root (gitignored).
+# ---------------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+HOST_FILE="$REPO_ROOT/.ki-host"
+
+HOST="${KI_HOST:-}"
+if [[ -z "$HOST" && -f "$HOST_FILE" ]]; then
+  HOST=$(cat "$HOST_FILE")
+fi
+
+REMOTE_DIR="/opt/ki"
+
+_require_host() {
+  if [[ -z "$HOST" ]]; then
+    echo "Error: VPS host not set."
+    echo "  export KI_HOST=<ip>  — or —  echo <ip> > .ki-host"
+    exit 1
+  fi
+}
+
+_ssh() {
+  ssh root@"$HOST" "$@"
+}
+
+_remote() {
+  _ssh "cd $REMOTE_DIR && $*"
+}
+
+# ---------------------------------------------------------------------------
+
+CMD="${1:-help}"
+shift || true
+
+case "$CMD" in
+
+  # --- Stack ----------------------------------------------------------------
+
+  up)
+    _require_host
+    SERVICE="${1:-}"
+    _remote "docker compose up --build -d $SERVICE"
+    ;;
+
+  down)
+    _require_host
+    _remote "docker compose down"
+    ;;
+
+  restart)
+    _require_host
+    SERVICE="${1:-}"
+    _remote "docker compose up --build -d $SERVICE"
+    ;;
+
+  logs)
+    _require_host
+    if [[ -n "${1:-}" ]]; then
+      _ssh "cd $REMOTE_DIR && docker compose logs -f $1"
+    else
+      _ssh "cd $REMOTE_DIR && docker compose logs -f api coding-agent browser"
+    fi
+    ;;
+
+  ps)
+    _require_host
+    _remote "docker compose ps"
+    ;;
+
+  deploy)
+    _require_host
+    _ssh bash <<'ENDSSH'
+set -euo pipefail
+cd /opt/ki
+
+echo "[deploy] pulling latest..."
+git pull --rebase
+
+CURRENT_HEAD=$(git rev-parse HEAD)
+
+docker tag ki-api:latest ki-api:stable 2>/dev/null || true
+
+_rollback() {
+  echo "[deploy] rolling back..."
+  git revert --no-edit HEAD
+  git push origin main
+  docker compose up --build -d || docker compose up -d --no-build || true
+  echo "[deploy] ROLLED BACK to previous version"
+}
+
+echo "[deploy] rebuilding and restarting all services..."
+if ! CACHEBUST=$(date +%s) docker compose up --build -d; then
+  _rollback; exit 1
+fi
+
+echo "[deploy] health check (90s)..."
+HEALTHY=false
+for i in $(seq 1 30); do
+  sleep 3
+  if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+    HEALTHY=true
+    break
+  fi
+  echo "[deploy]   attempt $i/30..."
+done
+
+if $HEALTHY; then
+  echo "[deploy] deploy successful! (${CURRENT_HEAD:0:7})"
+else
+  echo "[deploy] ERROR: health check failed"
+  _rollback; exit 1
+fi
+ENDSSH
+    ;;
+
+  # --- Actions --------------------------------------------------------------
+
+  heartbeat)
+    _require_host
+    echo "Triggering heartbeat..."
+    _remote "docker compose exec -T api python3 -c \
+      \"import urllib.request, json; r = urllib.request.urlopen(urllib.request.Request('http://localhost:8000/heartbeat/trigger', method='POST')); print(json.dumps(json.loads(r.read()), indent=2))\""
+    ;;
+
+  todays-note)
+    _require_host
+    echo "Creating today's daily note..."
+    _remote "docker compose exec -T api python3 -c \
+      \"import urllib.request, json; r = urllib.request.urlopen(urllib.request.Request('http://localhost:8000/daily-note/create', method='POST')); print(json.dumps(json.loads(r.read()), indent=2))\""
+    ;;
+
+  # --- Data -----------------------------------------------------------------
+
+  integrations)
+    _require_host
+    _remote "docker compose exec -T api python3 -c \
+      \"import urllib.request, json; r = urllib.request.urlopen('http://localhost:8000/integrations'); print(json.dumps(json.loads(r.read()), indent=2))\""
+    ;;
+
+  memories)
+    _require_host
+    CATEGORY="${1:-}"
+    if [[ -n "$CATEGORY" ]]; then
+      _remote "docker compose exec -T postgres psql -U agent agent -c \
+        \"SELECT category, content, updated_at FROM memories WHERE category = '$CATEGORY' ORDER BY updated_at DESC;\""
+    else
+      _remote "docker compose exec -T postgres psql -U agent agent -c \
+        \"SELECT category, content, updated_at FROM memories ORDER BY updated_at DESC LIMIT 50;\""
+    fi
+    ;;
+
+  state)
+    _require_host
+    _remote "docker compose exec -T postgres psql -U agent agent -t -c \
+      \"SELECT state FROM heartbeat_states ORDER BY created_at DESC LIMIT 1;\" \
+      | python3 -m json.tool"
+    ;;
+
+  usage)
+    _require_host
+    _remote "docker compose exec -T api python3 -c \
+      \"import urllib.request, json; r = urllib.request.urlopen('http://localhost:8000/usage'); print(json.dumps(json.loads(r.read()), indent=2))\""
+    ;;
+
+  db)
+    _require_host
+    QUERY="${1:-}"
+    if [[ -z "$QUERY" ]]; then
+      echo "Usage: ki db '<sql>'"
+      exit 1
+    fi
+    _remote "docker compose exec -T postgres psql -U agent agent -c \"$QUERY\""
+    ;;
+
+  # --- Desktop app ----------------------------------------------------------
+
+  app)
+    pkill -f "ki/desktop" 2>/dev/null || true
+    cd "$REPO_ROOT/desktop"
+    if [[ ! -d node_modules ]]; then
+      echo "Installing desktop dependencies..."
+      npm install
+    fi
+    npm start
+    ;;
+
+  # --- Maintenance ----------------------------------------------------------
+
+  prune)
+    _require_host
+    echo "Pruning unused Docker images..."
+    _remote "docker image prune -f"
+    ;;
+
+  # --- Tunnels --------------------------------------------------------------
+
+  connect)
+    _require_host
+    echo "Tunnelling — Phoenix at http://localhost:6006  (Ctrl+C to stop)"
+    ssh -N -L 6006:localhost:6006 root@"$HOST"
+    ;;
+
+  # --- Shell ----------------------------------------------------------------
+
+  ssh)
+    _require_host
+    _ssh
+    ;;
+
+  # --- Help -----------------------------------------------------------------
+
+  help|--help|-h)
+    cat <<'EOF'
+ki — manage the Ki stack on your VPS
+
+STACK
+  ki up [service]       Build and start (all services, or just one)
+  ki down               Stop everything
+  ki restart [service]  Rebuild and restart (all or one)
+  ki logs [service]     Tail logs (default: api, coding-agent, browser)
+  ki ps                 Show service status
+  ki deploy             git pull + up --build + health check + auto-rollback on failure
+
+ACTIONS
+  ki heartbeat          Trigger a heartbeat run immediately
+  ki todays-note        Create today's daily note immediately (same job as midnight cron)
+
+DATA
+  ki integrations       List loaded integrations with tools and schedules
+  ki memories [cat]     List memories (optional: preference / fact / person)
+  ki state              Latest heartbeat state JSON
+  ki usage              Token usage and estimated cost (last 30 days)
+  ki db '<sql>'         Run a raw psql query
+
+DESKTOP
+  ki app                Launch the Ki desktop app
+
+MAINTENANCE
+  ki prune              Remove unused Docker images (frees disk space)
+
+TUNNELS
+  ki connect            SSH tunnel — Phoenix at localhost:6006
+
+OTHER
+  ki ssh                Open a shell on the server
+
+HOST CONFIG
+  export KI_HOST=<ip>            — or —
+  echo <ip> > .ki-host           (gitignored, repo root)
+EOF
+    ;;
+
+  *)
+    echo "Unknown command: $CMD"
+    echo "Run 'ki help' for usage."
+    exit 1
+    ;;
+
+esac

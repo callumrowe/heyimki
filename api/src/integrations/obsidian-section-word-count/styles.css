@@ -1,0 +1,36 @@
+/*
+  Section Word Count — inline decoration styles
+  Appears at the end of the active heading line.
+*/
+
+.section-word-count-widget {
+  /* Muted, small, non-intrusive */
+  color: var(--text-faint);
+  font-size: 0.78em;
+  font-weight: 400;
+  font-family: var(--font-interface);
+  letter-spacing: 0.01em;
+
+  /* A little breathing room from the heading text */
+  margin-left: 0.9em;
+
+  /* Don't let it wrap or draw focus */
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+
+  /* Subtle separator dot is part of the text content:  · 247 words  */
+  opacity: 0.75;
+
+  /* Sit on the baseline with the heading */
+  vertical-align: baseline;
+
+  /* Transition so updates feel smooth rather than jarring */
+  transition: opacity 0.15s ease;
+}
+
+/* Slightly more visible when the heading line itself is focused */
+.cm-line:has(.section-word-count-widget):hover .section-word-count-widget,
+.cm-active .section-word-count-widget {
+  opacity: 1;
+}

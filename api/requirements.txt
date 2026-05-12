@@ -1,0 +1,32 @@
+fastapi>=0.115.0,<0.116
+uvicorn[standard]>=0.32.0,<0.33
+anthropic>=0.40.0
+pydantic>=2.10.0,<3
+sqlalchemy[asyncio]>=2.0.0,<3
+asyncpg>=0.30.0
+openai>=1.50.0
+qdrant-client>=1.12.0
+apscheduler>=3.10.0,<4
+httpx[http2]>=0.27.0
+PyJWT[crypto]>=2.8.0
+playwright>=1.40.0
+browser-use>=0.12.0
+langchain-anthropic>=0.3.0  # explicit dep; browser-use pulls this transitively but we pin it
+# Pin OTEL to a range compatible with arize-phoenix-otel.
+# browser-use pulls in 1.40.x which breaks the Phoenix exporter.
+opentelemetry-api>=1.20.0,<1.35.0
+opentelemetry-sdk>=1.20.0,<1.35.0
+opentelemetry-exporter-otlp-proto-http>=1.20.0,<1.35.0
+arize-phoenix-otel>=0.7.0
+openinference-instrumentation-anthropic>=0.1.0,<1.0.0
+rapidfuzz>=3.0.0
+pywebpush>=2.0.0
+pyotp>=2.9.0
+docker>=7.0.0
+google-auth>=2.0.0
+google-auth-oauthlib>=1.0.0
+google-auth-httplib2>=0.2.0
+google-api-python-client>=2.0.0
+pyyaml>=6.0.0
+pdfminer.six>=20221105
+markdown>=3.5.0

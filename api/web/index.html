@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0f0f0f">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Ki">
+  <link rel="icon" href="/apple-touch-icon.png" type="image/png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="apple-touch-icon-precomposed" href="/apple-touch-icon.png">
+  <link rel="manifest" href="./manifest.json">
+  <title>Ki</title>
+  <link rel="stylesheet" href="./styles.css?v=8">
+</head>
+<body>
+
+  <!-- Setup screen (shown on first launch) -->
+  <div id="setup-screen" class="hidden">
+    <div class="setup-card">
+      <div class="setup-logo">Ki</div>
+      <p class="setup-subtitle" id="setup-subtitle">Connect to your Ki instance</p>
+      <div class="setup-fields">
+        <div class="field-group" id="host-field-group" style="display:none">
+          <label for="setup-host">VPS IP or hostname</label>
+          <input type="text" id="setup-host" placeholder="1.2.3.4" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field-group">
+          <label for="setup-secret">Desktop secret</label>
+          <input type="password" id="setup-secret" placeholder="your DESKTOP_SECRET" autocomplete="current-password">
+        </div>
+        <div id="setup-error" class="setup-error hidden"></div>
+        <button id="setup-connect" class="btn-primary">Connect</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Shared title bar (always visible) -->
+  <div class="titlebar" id="main-titlebar">
+    <div class="header-content">
+      <div class="ki-name">Ki</div>
+      <button class="voice-btn" id="voice-btn" title="Voice mode">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <rect x="5" y="1" width="6" height="9" rx="3" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M2.5 8.5C2.5 11.538 4.962 14 8 14C11.038 14 13.5 11.538 13.5 8.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          <line x1="8" y1="14" x2="8" y2="15.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <div class="header-right">
+        <button class="media-btn" id="media-btn">Media</button>
+        <button class="admin-btn" id="admin-btn">Admin</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main chat screen -->
+  <div id="chat-screen" class="hidden">
+
+    <!-- KITT scanner line (loading indicator) -->
+    <div class="kitt-scanner hidden" id="kitt-scanner"></div>
+
+    <!-- Messages -->
+    <div class="messages" id="messages">
+      <div class="messages-inner" id="messages-inner"></div>
+    </div>
+
+    <!-- Input -->
+    <div class="input-area">
+      <div id="reply-bar" class="reply-bar hidden">
+        <div class="reply-bar-content">
+          <span class="reply-icon">↩</span>
+          <span id="reply-preview" class="reply-preview"></span>
+        </div>
+        <button id="reply-cancel" class="reply-cancel">✕</button>
+      </div>
+      <div id="queue-bar" class="queue-bar hidden"></div>
+      <div id="attachment-bar" class="attachment-bar hidden">
+        <img id="attachment-thumb" class="attachment-thumb hidden" alt="">
+        <span id="attachment-name" class="attachment-name"></span>
+        <button id="attachment-cancel" class="attachment-cancel">✕</button>
+      </div>
+      <input type="file" id="file-input" accept="image/*,.pdf,.txt,.rtf" style="display:none">
+      <div class="voice-controls hidden" id="voice-controls">
+        <div class="voice-buttons-row">
+          <div class="voice-btn-wrap">
+            <button class="play-last-btn" id="play-last-btn" title="Play last Ki message" disabled>
+              <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor">
+                <polygon points="3,1 13,8 3,15"/>
+              </svg>
+            </button>
+            <span class="play-last-label">Play last</span>
+          </div>
+          <div class="voice-btn-wrap">
+            <button class="record-btn" id="record-btn">
+              <svg width="20" height="20" viewBox="0 0 16 16" fill="none">
+                <rect x="5" y="1" width="6" height="9" rx="3" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M2.5 8.5C2.5 11.538 4.962 14 8 14C11.038 14 13.5 11.538 13.5 8.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <line x1="8" y1="14" x2="8" y2="15.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+            </button>
+            <span class="record-label" id="record-label">Tap to record</span>
+          </div>
+        </div>
+      </div>
+      <div id="slash-palette" class="slash-palette hidden"></div>
+      <div class="input-row">
+        <label for="file-input" class="attach-btn" title="Attach image or document">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <path d="M13.5 7.5L7.5 13.5C6.1 14.9 3.9 14.9 2.5 13.5C1.1 12.1 1.1 9.9 2.5 8.5L8.5 2.5C9.4 1.6 10.9 1.6 11.8 2.5C12.7 3.4 12.7 4.9 11.8 5.8L5.8 11.8C5.35 12.25 4.65 12.25 4.2 11.8C3.75 11.35 3.75 10.65 4.2 10.2L9.5 4.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </label>
+        <textarea
+          id="message-input"
+          placeholder="Message Ki..."
+          rows="1"
+          autocomplete="off"
+          spellcheck="true"
+        ></textarea>
+        <button class="send-btn" id="send-btn" disabled>
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+            <path d="M2 8L14 8M14 8L9 3M14 8L9 13" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Drop overlay -->
+    <div id="drop-overlay" class="drop-overlay hidden">
+      <div class="drop-label">Drop to attach</div>
+    </div>
+
+  </div>
+
+  <!-- Admin screen -->
+  <div id="admin-screen" class="hidden">
+    <div class="titlebar">
+      <div class="header-content">
+        <button class="admin-back-btn" id="admin-back-btn">← Chat</button>
+        <div class="admin-tab-bar">
+          <button class="admin-tab active" data-tab="state"     data-emoji="💓">Heartbeat</button>
+          <button class="admin-tab" data-tab="reminders" data-emoji="⏰">Reminders</button>
+          <button class="admin-tab" data-tab="memories"  data-emoji="🧠">Memories</button>
+          <button class="admin-tab" data-tab="signals"   data-emoji="📡">Signals</button>
+          <button class="admin-tab" data-tab="usage"     data-emoji="📊">Usage</button>
+          <button class="admin-tab" data-tab="system"    data-emoji="⚙️">System</button>
+        </div>
+        <div class="admin-header-spacer"></div>
+      </div>
+    </div>
+    <div class="admin-content">
+      <div id="admin-tab-state" class="admin-panel"></div>
+      <div id="admin-tab-reminders" class="admin-panel hidden"></div>
+      <div id="admin-tab-memories" class="admin-panel hidden"></div>
+      <div id="admin-tab-signals" class="admin-panel hidden"></div>
+      <div id="admin-tab-usage" class="admin-panel hidden"></div>
+      <div id="admin-tab-system" class="admin-panel hidden"></div>
+    </div>
+  </div>
+
+  <!-- Media screen -->
+  <div id="media-screen" class="hidden">
+    <div class="titlebar">
+      <div class="header-content">
+        <button class="admin-back-btn" id="media-back-btn">← Chat</button>
+        <div class="ki-name">Media</div>
+        <div class="admin-header-spacer"></div>
+      </div>
+    </div>
+    <div class="media-grid-wrap">
+      <div class="media-grid" id="media-grid"></div>
+    </div>
+  </div>
+
+
+  <!-- Today note modal -->
+  <div id="today-modal" class="today-modal hidden">
+    <button class="today-modal-close" id="today-modal-close">✕</button>
+    <div class="today-modal-content" id="today-modal-content"></div>
+  </div>
+
+  <!-- Full-page connection overlay (blocks UI while connecting) -->
+  <div id="connection-overlay" class="connection-overlay">
+    <div class="co-scanner"></div>
+  </div>
+
+  <!-- Tool logs side panel -->
+  <div id="logs-panel-backdrop" class="logs-panel-backdrop"></div>
+  <div id="logs-panel" class="logs-panel">
+    <div class="logs-panel-header">
+      <span class="logs-panel-icon" id="logs-panel-icon"></span>
+      <span class="logs-panel-name" id="logs-panel-name"></span>
+      <span class="logs-panel-meta" id="logs-panel-meta"></span>
+      <button class="logs-panel-close" id="logs-panel-close" title="Close">✕</button>
+    </div>
+    <div class="logs-panel-body" id="logs-panel-body"></div>
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@4/marked.min.js"></script>
+<script src="./app.js?v=9"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js');
+  }
+</script>
+</body>
+</html>

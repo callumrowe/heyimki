@@ -1,0 +1,198 @@
+networks:
+  ki_internal:
+    driver: bridge
+  core:
+    external: true
+
+volumes:
+  baileys_auth:
+  ki_postgres:
+  ki_qdrant:
+  ki_phoenix:
+
+services:
+
+  # ── Persistent Chromium browser (CDP on port 9222) ───────────────────────
+  browser:
+    image: zenika/alpine-chrome:latest
+    entrypoint: chromium-browser
+    command:
+      - --no-sandbox
+      - --disable-setuid-sandbox
+      - --no-zygote
+      - --remote-debugging-address=0.0.0.0
+      - --remote-debugging-port=9222
+      - --remote-allow-origins=*
+      - --headless
+      - --disable-gpu
+      - --disable-software-rasterizer
+      - --disable-dev-shm-usage
+      - --disable-extensions
+      - --no-first-run
+      - --mute-audio
+      - --log-level=3
+      - --disable-logging
+      - about:blank
+    networks:
+      - ki_internal
+    restart: unless-stopped
+    shm_size: '2gb'
+
+  # ── WhatsApp Gateway ──────────────────────────────────────────────────────
+  baileys:
+    build:
+      context: ./baileys
+      args:
+        CACHEBUST: "${CACHEBUST:-0}"
+    restart: unless-stopped
+    depends_on:
+      - api
+    volumes:
+      - baileys_auth:/app/auth_info
+      - ./baileys/src:/app/src
+    environment:
+      - AGENT_API_URL=http://api:8000
+      - ALLOWED_JID=${YOUR_WHATSAPP_JID}
+      - INTERNAL_SECRET=${INTERNAL_SECRET}
+    networks:
+      - ki_internal
+    mem_limit: 256m
+
+  # ── Postgres ─────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    volumes:
+      - ki_postgres:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=agent
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=agent
+    networks:
+      - ki_internal
+    mem_limit: 256m
+
+  # ── Qdrant vector store ───────────────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    volumes:
+      - ki_qdrant:/qdrant/storage
+    networks:
+      - ki_internal
+    mem_limit: 256m
+
+  # ── Vault sync ────────────────────────────────────────────────────────────
+  vault-sync:
+    image: alpine/git
+    restart: unless-stopped
+    volumes:
+      - /opt/vault:/vault
+      - /root/.ssh/ki_vault_deploy_key:/root/.ssh/ki_vault_deploy_key:ro
+      - /root/.ssh/known_hosts:/root/.ssh/known_hosts:ro
+    entrypoint: >
+      sh -c "while true; do
+        GIT_SSH_COMMAND='ssh -i /root/.ssh/ki_vault_deploy_key -o StrictHostKeyChecking=no' git -C /vault pull --quiet 2>&1;
+        sleep 60;
+      done"
+    networks:
+      - ki_internal
+    mem_limit: 64m
+
+  # ── Phoenix observability UI ─────────────────────────────────────────────
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6006:6006"
+    volumes:
+      - ki_phoenix:/phoenix
+    environment:
+      - PHOENIX_WORKING_DIR=/phoenix
+    networks:
+      - ki_internal
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:6006/', timeout=5)"]
+      interval: 15s
+      timeout: 8s
+      retries: 5
+      start_period: 60s
+
+  # ── Coding agent ──────────────────────────────────────────────────────────
+  coding-agent:
+    build: ./coding-agent
+    restart: unless-stopped
+    volumes:
+      - ./:/repo
+      - /root/.ssh:/root/.ssh:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/sweat:/opt/sweat
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - REPO_HOST_PATH=/opt/ki
+    networks:
+      - ki_internal
+    mem_limit: 1g
+
+  # ── Agent Brain ───────────────────────────────────────────────────────────
+  api:
+    build: ./api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"   # localhost only — platform Caddy proxies externally via core network
+    depends_on:
+      postgres:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      phoenix:
+        condition: service_started
+      browser:
+        condition: service_started
+    volumes:
+      - ./api/src:/app/src
+      - ./api/web:/app/web   # bind-mount so web UI changes don't require rebuild
+      - ./api/prompts:/app/prompts   # bind-mount so prompt edits persist across rebuilds
+      - /opt/vault:/vault
+      - /root/.ssh/ki_vault_deploy_key:/root/.ssh/ki_vault_deploy_key:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - PYTHONUNBUFFERED=1
+      - IN_DOCKER=True
+      - ANONYMIZED_TELEMETRY=false
+      - TZ=Pacific/Auckland
+      - USER_TZ=${USER_TZ:-Pacific/Auckland}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DATABASE_URL=postgresql+asyncpg://agent:${DB_PASSWORD}@postgres:5432/agent
+      - QDRANT_URL=http://qdrant:6333
+      - OBSIDIAN_VAULT_PATH=/vault
+      - BAILEYS_URL=http://baileys:3000
+      - INTERNAL_SECRET=${INTERNAL_SECRET}
+      - DESKTOP_SECRET=${DESKTOP_SECRET}
+      - CODING_AGENT_URL=http://coding-agent:3002
+      - HEARTBEAT_HOURS=${HEARTBEAT_HOURS:-3}
+      - HEARTBEAT_QUIET_START=${HEARTBEAT_QUIET_START:-22}
+      - HEARTBEAT_QUIET_END=${HEARTBEAT_QUIET_END:-7}
+      - SESSION_GAP_HOURS=${SESSION_GAP_HOURS:-0.5}
+      - BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY}
+      - XAI_API_KEY=${XAI_API_KEY}
+      - YOUR_WHATSAPP_JID=${YOUR_WHATSAPP_JID}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_REPO=${GITHUB_REPO}
+      - VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY}
+      - VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY}
+      - VAPID_SUBJECT=${VAPID_SUBJECT:-mailto:you@example.com}
+      - OP_SERVICE_ACCOUNT_TOKEN=${OP_SERVICE_ACCOUNT_TOKEN}
+      - OP_DISABLE_UPDATE_CHECK=true
+      - OP_CONFIG_DIR=/app/.op-config
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI}
+      - BROWSER_CDP_URL=http://browser:9222
+    networks:
+      - ki_internal
+      - core
+    mem_limit: 512m
+    shm_size: '512m'

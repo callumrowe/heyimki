@@ -1,0 +1,3 @@
+ALTER TABLE token_usage
+  ADD COLUMN IF NOT EXISTS cache_creation_tokens INT NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS cache_read_tokens     INT NOT NULL DEFAULT 0;

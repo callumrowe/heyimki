@@ -1,0 +1,16 @@
+{
+  "name": "Ki",
+  "short_name": "Ki",
+  "start_url": "/app/",
+  "display": "standalone",
+  "background_color": "#0f0f0f",
+  "theme_color": "#0f0f0f",
+  "icons": [
+    {
+      "src": "./icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
