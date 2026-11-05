@@ -55,7 +55,7 @@ _SCHEDULE_FNS: dict[str, object] = {
     "run_daily_note_creator": None,  # patched below
 }
 
-NZ_TZ = ZoneInfo(os.environ.get("USER_TZ", "Pacific/Auckland"))
+USER_TZ = ZoneInfo((os.environ.get("USER_TZ") or "UTC"))
 UTC = ZoneInfo("UTC")
 TEMPLATE_PATH = "templates/daily.md"
 
@@ -69,8 +69,8 @@ def get_schedule_fn(name: str):
 
 async def _fetch_reminders_for_date(note_date: date) -> list[tuple[int, str]]:
     """Return (id, message) pairs for active uninjected reminders on note_date (NZ time)."""
-    midnight_nz = datetime(note_date.year, note_date.month, note_date.day, 0, 0, 0, tzinfo=NZ_TZ)
-    next_midnight_nz = midnight_nz + timedelta(days=1)
+    midnight_local = datetime(note_date.year, note_date.month, note_date.day, 0, 0, 0, tzinfo=USER_TZ)
+    next_midnight_local = midnight_local + timedelta(days=1)
     async with SessionLocal() as session:
         result = await session.execute(
             sa.text("""
@@ -78,7 +78,7 @@ async def _fetch_reminders_for_date(note_date: date) -> list[tuple[int, str]]:
                 WHERE remind_at >= :start AND remind_at < :end
                   AND sent = false AND cancelled = false AND note_injected = false
             """),
-            {"start": midnight_nz.astimezone(UTC), "end": next_midnight_nz.astimezone(UTC)},
+            {"start": midnight_local.astimezone(UTC), "end": next_midnight_local.astimezone(UTC)},
         )
         return [(row[0], row[1]) for row in result.fetchall()]
 
@@ -105,7 +105,7 @@ async def create_daily_note(note_date: date | None = None) -> str:
     Returns a status string. Idempotent — returns early if the note already exists.
     """
     if note_date is None:
-        note_date = datetime.now(NZ_TZ).date()
+        note_date = datetime.now(USER_TZ).date()
 
     note_filename = f"daily/{note_date.isoformat()}.md"
 
@@ -171,7 +171,7 @@ async def create_daily_note(note_date: date | None = None) -> str:
 
 async def run_daily_note_creator() -> None:
     """Scheduled job: create today's daily note at midnight NZ time."""
-    today = datetime.now(NZ_TZ).date()
+    today = datetime.now(USER_TZ).date()
     print(f"[daily_note] checking daily/{today.isoformat()}.md")
     result = await create_daily_note(today)
     print(f"[daily_note] {result}")

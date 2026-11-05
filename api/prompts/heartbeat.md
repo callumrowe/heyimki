@@ -10,7 +10,7 @@ Recent conversations (last few hours — use for current activity, themes, todos
 {recent_convos}
 {recent_12h_suppression_block}
 
-Extended conversation history (last 24+ hours — use specifically to detect acknowledgements, deferrals, and snoozes. If Callum said something is handled, waiting, or Ki committed to backing off, snooze it). CRITICAL: if Callum explicitly told Ki to stop raising something or expressed clear frustration that Ki raised it, snooze that item with resurface_after: null and until: "Callum explicitly brings it up" — do not resurface it on a date, ever:
+Extended conversation history (last 24+ hours — use specifically to detect acknowledgements, deferrals, and snoozes. If {{USER_NAME}} said something is handled, waiting, or Ki committed to backing off, snooze it). CRITICAL: if {{USER_NAME}} explicitly told Ki to stop raising something or expressed clear frustration that Ki raised it, snooze that item with resurface_after: null and until: "{{USER_NAME}} explicitly brings it up" — do not resurface it on a date, ever:
 {extended_convos}
 
 Open todos from vault (these are sourced directly from the user's notes — treat them as ground truth for what they intended to do):
@@ -29,17 +29,17 @@ Produce a JSON object with exactly these keys:
 
 - backlog_todos: valid tasks that have no current urgency — eventual/someday items, things not being actively worked on right now. Move chronic open_todos here if they've been open 14+ days with no recent conversation activity. This list can be long. Do not include anything that belongs in open_todos or snoozed.
 
-- open_loops: things raised in conversation but LEFT UNRESOLVED — unanswered questions, pending decisions, outcomes not yet known. Be diligent here. If Callum raised a topic but there was no clear resolution, it's a loop. Examples: "awaiting reply from X", "Callum mentioned wanting to do Y but didn't confirm", "question about Z was asked but not answered". ONLY exclude something if Ki explicitly answered it and the answer was acknowledged. If there's any doubt, include it.
+- open_loops: things raised in conversation but LEFT UNRESOLVED — unanswered questions, pending decisions, outcomes not yet known. Be diligent here. If {{USER_NAME}} raised a topic but there was no clear resolution, it's a loop. Examples: "awaiting reply from X", "{{USER_NAME}} mentioned wanting to do Y but didn't confirm", "question about Z was asked but not answered". ONLY exclude something if Ki explicitly answered it and the answer was acknowledged. If there's any doubt, include it.
 
-- ki_commitments: things Ki explicitly promised to do, follow up on, remind about, or surface FOR CALLUM on a specific date or condition. Format date-specific ones as "YYYY-MM-DD: description" so the date can be parsed. Example: "2026-04-20: Flag quarterly tax payment due April 30". Non-date ones are plain strings. IMPORTANT: do NOT include meta-instructions about how Ki should behave — those are system notes, not commitments to Callum. Drop any from previous state that have been fulfilled or whose date has passed.
+- ki_commitments: things Ki explicitly promised to do, follow up on, remind about, or surface FOR {{USER_NAME}} on a specific date or condition. Format date-specific ones as "YYYY-MM-DD: description" so the date can be parsed. Example: "2026-04-20: Flag quarterly tax payment due April 30". Non-date ones are plain strings. IMPORTANT: do NOT include meta-instructions about how Ki should behave — those are system notes, not commitments to {{USER_NAME}}. Drop any from previous state that have been fulfilled or whose date has passed.
 
 - current_projects: what the user is actively working on RIGHT NOW (not someday projects). Max 8. Focus on projects with recent conversation activity.
 
 - recent_themes: the 5 most significant or recurring topics from recent conversations. Be selective — quality over quantity.
 
-- energy_level: one short phrase describing Callum's apparent state inferred from conversation tone — e.g. "focused and productive", "busy/scattered", "low energy", "stressed", "relaxed and exploratory". Use null if not enough data.
+- energy_level: one short phrase describing {{USER_NAME}}'s apparent state inferred from conversation tone — e.g. "focused and productive", "busy/scattered", "low energy", "stressed", "relaxed and exploratory". Use null if not enough data.
 
-- snoozed: items explicitly acknowledged, deferred, or dismissed. Each entry: {"item": "short name", "reason": "why snoozed", "until": "condition or date or 'context changes'", "resurface_after": "YYYY-MM-DD or null"}. Rules: (1) Carry forward only if still genuinely pending. (2) DROP if resolved, irrelevant, or the reason no longer makes sense. When in doubt, drop it. (3) Add only if Callum explicitly deferred or Ki committed to backing off. (4) If today ({today}) >= resurface_after, remove entirely. (5) Set resurface_after to a sensible lead time for time-sensitive items. (6) Deduplicate.
+- snoozed: items explicitly acknowledged, deferred, or dismissed. Each entry: {"item": "short name", "reason": "why snoozed", "until": "condition or date or 'context changes'", "resurface_after": "YYYY-MM-DD or null"}. Rules: (1) Carry forward only if still genuinely pending. (2) DROP if resolved, irrelevant, or the reason no longer makes sense. When in doubt, drop it. (3) Add only if {{USER_NAME}} explicitly deferred or Ki committed to backing off. (4) If today ({today}) >= resurface_after, remove entirely. (5) Set resurface_after to a sensible lead time for time-sensitive items. (6) Deduplicate.
 
 - things_to_mention: up to 5 items worth proactively raising. Criteria: (a) time-sensitive with deadline in next 7 days, (b) at risk of being forgotten, (c) action needed soon, OR (d) a ki_commitment whose date is approaching within 3 days. NEVER include: active snoozes (even paraphrased), questions Ki already answered, generic pleasantries, topics already thoroughly discussed, OR anything that appears in the PENDING REMINDERS list above — if a reminder is already set for it, the reminder will handle it and the heartbeat must not raise it again. Order by urgency. Empty list if nothing qualifies. IMPORTANT: when any item is date-specific, include the ISO date in the string — do NOT use relative language like "in 2 days" or "on Monday" since this text will be stale by the time it's read.
 
@@ -55,7 +55,7 @@ Note: The placeholders above ({today}, {snooze_block}, {recent_convos}, etc.) ar
 
 ACTIVELY SNOOZED ITEMS — items whose resurface date hasn't passed yet; these MUST NOT appear in things_to_mention.
 
-PENDING REMINDERS — items Callum has already set a reminder for; the heartbeat must not double-nag these.
+PENDING REMINDERS — items {{USER_NAME}} has already set a reminder for; the heartbeat must not double-nag these.
 
 Vault todos removed since last heartbeat — completed or deleted items that should be closed out.
 

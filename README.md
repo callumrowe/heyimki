@@ -1,146 +1,150 @@
-# ki
+# Ki
 
-**A personal AI that lives on your server, talks to you on WhatsApp, and actually knows what's going on in your life.**
+**A personal AI assistant you host yourself. She knows your Obsidian vault, remembers what you tell her, and checks in when something needs your attention.**
 
-Not a chatbot. Not a wrapper around ChatGPT. Ki is a self-hosted agent with persistent memory, access to your notes and the web — and a heartbeat that keeps her up to date even when you haven't messaged in days.
+Ki runs in Docker on your own computer or any VPS. You talk to her in a web app you can install on your phone, or on WhatsApp. She reads and writes your notes, keeps track of your todos, browses the web, and every few hours reviews what's going on and messages you if there's something worth saying.
 
----
-
-## What it is
-
-Ki runs on any VPS. You talk to her on WhatsApp, just like messaging a person. She remembers everything, checks in proactively, and can take real actions — browsing the web, reading and writing to your Obsidian vault, and even writing her own new integrations.
-
-She has a defined personality. She has opinions. She pushes back. She's not trying to be your assistant — she's trying to be useful.
+She's built for one person: you. There are no accounts and no multi-tenancy. It's your server, your keys and your data.
 
 ---
 
-## Features
+## What she does
 
-### WhatsApp-native
-Talk to Ki the same way you'd message anyone. Text, images, voice notes — all handled. No app to download, no interface to learn.
+- **Knows your notes.** Your Obsidian vault is indexed for semantic search. Ki searches it when you ask about projects, people or plans, and pulls relevant excerpts into every conversation.
+- **Writes to your vault.** She appends to daily notes, creates new notes, and ticks off `- [ ]` todos when you tell her something's done. She also creates each day's note from your template at midnight.
+- **Remembers.** Conversations and the things she learns about you are kept in Postgres. React 👍 to one of her messages and she files what it was about as a memory.
+- **Checks in.** The heartbeat runs every few hours outside quiet hours. It works out what's open (todos, loose ends, things you said you'd do) and, if there's something real, sends you a short message in Ki's voice.
+- **Uses the web.** She can search, open pages, and act on them in a headless browser. Consequential actions go through a confirmation step.
+- **Handles more than text.** Images, PDFs and voice notes (transcribed with Whisper) all work.
+- **Can extend herself (optional).** With the coding agent switched on, she can write new integrations and change her own code.
+- **Traces everything.** Every model call and tool use is visible in Phoenix.
 
-### Persistent memory
-Every conversation is stored. Ki remembers what you told her last week, what you're working on, what you've deferred. She doesn't ask you to repeat yourself.
+Ki's personality is a plain Markdown file. Edit [`api/prompts/identity.md`](api/prompts/identity.md) to make her yours.
 
-### Obsidian vault integration
-Your notes are indexed into a vector database on startup. Every message Ki receives is enriched with semantically relevant vault excerpts. She can read notes, write to them, and append to your daily notes in the correct format.
+---
 
-### Proactive heartbeat
-Ki synthesises her state every few hours during the day — open todos, ongoing projects, things worth mentioning — and sends you a WhatsApp message if there's something worth saying. No pinging overnight. No hollow check-ins. Only when she has something real.
+## Quick start
 
-### Browser access
-Ki can navigate the web and act on pages via Playwright and browser-use. Consequential actions (form submissions, purchases) go through a confirmation gate — she asks first.
+You need [Docker](https://docs.docker.com/get-docker/) with Compose v2, an [Anthropic API key](https://console.anthropic.com), and an [OpenAI API key](https://platform.openai.com) (used for search embeddings and voice transcription).
 
-### Self-extending
-Ki can write her own integrations. Describe what you want, she delegates to a sandboxed coding agent, the code is committed to the repo, and a deploy brings it live. She can also edit her own prompts and, behind a confirmation gate, her own core Python files.
+```bash
+git clone https://github.com/callumrowe/heyimki.git ki
+cd ki
+./setup.sh
+```
 
-### Full observability
-Every LLM call and tool use is traced in Phoenix. Token usage is tracked in Postgres and queryable with `ki usage`.
+`setup.sh` asks for your name, timezone, keys and vault, writes `.env`, and starts the stack. Then open **http://localhost:8000/app/** and enter the password it prints (`DESKTOP_SECRET` in `.env`).
+
+Prefer to do it by hand? `cp .env.example .env`, fill it in, then run `docker compose up -d --build`.
+
+### Your vault
+
+Set `KI_VAULT_PATH` in `.env` to the folder of an existing Obsidian vault, or keep the default `./vault`, which setup creates from [`examples/vault`](examples/vault).
+
+- **A plain folder works.** Ki writes files directly and picks up your edits every few minutes (`VAULT_SYNC_MINUTES`).
+- **A git repo gets history.** Every change Ki makes is committed.
+- **A git repo with a remote stays in sync.** Ki pulls before writing and pushes after. For a private repo over SSH, put a deploy key at `secrets/vault_deploy_key` (see [`secrets/README.md`](secrets/README.md)).
+
+Ki expects daily notes at `daily/YYYY-MM-DD.md`, made from `templates/daily.md`, with a `## Daily notes` section. If your vault is laid out differently, edit `api/prompts/instructions.md`.
+
+---
+
+## Optional parts
+
+Switch these on with `COMPOSE_PROFILES` in `.env` (comma-separated), then run `docker compose up -d`.
+
+| Profile | What it adds |
+|---|---|
+| `whatsapp` | WhatsApp gateway. Ki answers one WhatsApp chat: yours. |
+| `https` | Caddy reverse proxy with automatic Let's Encrypt TLS for `KI_DOMAIN`. Use this on a VPS. |
+| `coding-agent` | Ki can edit her own code and rebuild her containers. **Read the warning below first.** |
+
+### WhatsApp
+
+Use a WhatsApp account you can dedicate to Ki, such as a spare number.
+
+1. Add `whatsapp` to `COMPOSE_PROFILES` and run `docker compose up -d`.
+2. Run `docker compose logs -f baileys`, then scan the QR code from that account (**Settings → Linked devices**).
+3. Message that account from your own phone. The log prints `set YOUR_WHATSAPP_JID=...`.
+4. Put that value in `.env` and run `docker compose up -d baileys api`.
+
+### On a VPS
+
+Any Linux server with Docker and about 2 GB of RAM works.
+
+1. Point a DNS A record (for example `ki.example.com`) at the server.
+2. Open ports 80 and 443.
+3. Run `./setup.sh` on the server and enter that domain when asked.
+
+Caddy fetches the certificate itself. The web app will be at `https://ki.example.com/app/`. The api port stays bound to `127.0.0.1`, so all outside traffic goes through Caddy.
+
+### Coding agent: understand this before you turn it on
+
+The coding agent runs Claude Code with write access to this repo **and the Docker socket**. In practice that means root on the machine. Anyone who can steer Ki can, in effect, run code on your server, and that includes a web page she reads that tries to trick her. All internal calls need `INTERNAL_SECRET`, but the agent itself acts on whatever Ki asks. Only enable it on a machine you're comfortable with that.
+
+By default its commits stay local. Set `CODING_AGENT_GIT_PUSH=true` to push them to the repo's `origin` remote.
+
+### Integrations
+
+These switch on automatically when you set their key in `.env`:
+
+| Integration | Key(s) |
+|---|---|
+| Web search | `BRAVE_SEARCH_API_KEY` |
+| Image generation and voice replies | `XAI_API_KEY` |
+| GitHub issues and PRs | `GITHUB_TOKEN`, `GITHUB_REPO` |
+| Gmail, Google Calendar and Drive | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` |
+| Logins and 2FA codes for the browser (1Password) | `OP_SERVICE_ACCOUNT_TOKEN` |
+| Push notifications | `VAPID_PRIVATE_KEY`, `VAPID_PUBLIC_KEY` (setup.sh generates these) |
+
+Time tools, reminders and daily notes are always on.
+
+---
+
+## Running it
+
+`bin/ki` wraps the common commands. It runs against this folder by default, or against a server over SSH if you set `KI_HOST`.
+
+```bash
+bin/ki ps              # service status
+bin/ki logs api        # tail logs
+bin/ki update          # git pull, rebuild, wait until healthy
+bin/ki heartbeat       # run the heartbeat now
+bin/ki state           # latest heartbeat state
+bin/ki usage           # token usage and estimated cost
+bin/ki memories        # what Ki remembers about you
+bin/ki help            # everything else
+```
+
+Phoenix tracing is at http://localhost:6006. On a server, `bin/ki phoenix` opens an SSH tunnel to it.
 
 ---
 
 ## Architecture
 
 ```
-Your Phone (WhatsApp)
-         │
-         ▼
-   ┌───────────┐
-   │  Baileys  │  Node.js WA gateway
-   └─────┬─────┘
-         │ HTTP (internal Docker network)
-         ▼
-   ┌───────────┐     ┌────────────┐
-   │  FastAPI  │◄───►│  Postgres  │  conversation history, memories, state
-   │  (agent)  │     └────────────┘
-   └─────┬─────┘
-         │
-   ┌─────┴──────────────────────────────────┐
-   │              Tool Router               │
-   ├──────────┬──────────────┬──────────────┤
-   ▼          ▼              ▼              ▼
- Qdrant   Playwright   Integrations   coding-agent
- (vault,  (browser)    (calendar,     (writes new
-  memory)              time, ...)      integrations)
+  Web app (PWA)      WhatsApp ──► baileys (optional)
+        │                            │
+        └──────────► api ◄───────────┘
+                (FastAPI agent, scheduler, web app)
+                     │
+     ┌───────────┬───┴───────┬──────────────┬──────────────┐
+  Postgres     Qdrant     browser       your vault    coding-agent
+  (history,   (vault +   (headless     (bind mount)   (optional)
+   memories,   memory     Chromium)
+   state)      search)
 ```
 
-Everything runs in Docker Compose. Nothing is exposed to the internet. The WhatsApp connection, agent brain, databases, and scheduler all communicate over an internal network.
+**Stack:** Python and FastAPI · Node.js (Baileys, coding agent) · Claude (Sonnet for conversation, Haiku for background work) · PostgreSQL · Qdrant · Playwright and browser-use · APScheduler · Phoenix.
 
-**Stack:** Python + FastAPI · Node.js (Baileys, coding-agent) · Claude API (Sonnet + Haiku) · PostgreSQL · Qdrant · Playwright · APScheduler · Phoenix
+Developer notes are in [`CLAUDE.md`](CLAUDE.md).
 
 ---
 
-## Self-hosting
+## Running cost
 
-Ki is designed for one person. There's no multi-tenant architecture, no auth layer, no SaaS. It's yours to run, modify, and extend.
-
-**What you need:**
-- A VPS (DigitalOcean $6/mo VPS works fine)
-- A second WhatsApp account (or a number you can dedicate)
-- An Anthropic API key
-- An OpenAI API key (embeddings only)
-
-**Deploy:**
-```bash
-git clone git@github.com:<your-username>/ki.git /opt/ki
-cd /opt/ki
-cp .env.example .env   # fill in your secrets
-docker compose up --build -d
-```
-
-Scan the QR code in Baileys logs to connect WhatsApp. That's it.
-
-**Local management via the `ki` CLI:**
-```bash
-ki deploy       # git pull + rebuild on the VPS
-ki logs         # tail all service logs
-ki heartbeat    # trigger a heartbeat run immediately
-ki memories     # list stored memories
-ki state        # latest heartbeat state JSON
-ki usage        # token usage last 30 days
-ki ssh          # shell on the VPS
-```
-
----
-
-## Estimated running cost
-
-| Item | Cost |
+| Item | Typical |
 |---|---|
-| VPS (2GB) | ~$10–20/mo |
-| Anthropic API (typical usage) | ~$10–30/mo |
-| OpenAI API (embeddings only) | ~$1/mo |
-| **Total** | **~$30–50/mo** |
-
----
-
-## Personality
-
-Ki's character is defined in `api/prompts/identity.md` — a plain Markdown file, no code. Edit it to tune her voice, values, and communication style. She's designed to have opinions, push back, and care — not to be a polite tool with no point of view.
-
-Operational rules (timezone, formatting, tool use) live in `api/prompts/instructions.md`.
-
----
-
-## Status
-
-All phases are live and running in production:
-
-- [x] WhatsApp ↔ Claude pipe with persistent Postgres memory
-- [x] Obsidian vault indexed into Qdrant with semantic search
-- [x] Proactive heartbeat with synthesised state
-- [x] Browser tools with consequential action gate
-- [x] Image and voice note support
-- [x] Ki writes her own integrations (coding-agent)
-- [x] Ki edits her own prompts and core files (with confirmation gate)
-- [x] Full LLM observability via Phoenix
-- [x] `ki` CLI for local management
-
----
-
-## Docs
-
-- [`personal-ai-agent-runbook.md`](personal-ai-agent-runbook.md) — full architecture and build runbook
-- [`plan.md`](plan.md) — detailed build plan and phase history
-- [`CLAUDE.md`](CLAUDE.md) — implementation notes and operational details
-- [`.env.example`](.env.example) — all environment variables with descriptions
+| VPS with 2–4 GB RAM (or your own computer) | $0–20/mo |
+| Anthropic API | $10–30/mo |
+| OpenAI API (embeddings and Whisper) | ~$1/mo |

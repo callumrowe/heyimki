@@ -17,7 +17,6 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Security
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
@@ -26,15 +25,17 @@ from . import memory as _mem_module
 from .alerts import send_alert
 from .db import SessionLocal, run_migrations
 from .heartbeat import run_heartbeat
+from .config import USER_LABEL
 from .indexer import reindex
 from . import memory as mem
-from .push import send_push_to_all, send_apns_to_all, VAPID_PUBLIC_KEY
+from .push import send_push_to_all, VAPID_PUBLIC_KEY
 from .vector_store import client as qdrant_client, ensure_collections
 
 HEARTBEAT_HOURS = int(os.environ.get("HEARTBEAT_HOURS", "3"))
 DESKTOP_SECRET = os.environ.get("DESKTOP_SECRET", "")
+VAULT_SYNC_MINUTES = float(os.environ.get("VAULT_SYNC_MINUTES", "5"))
 INTERNAL_SECRET = os.environ.get("INTERNAL_SECRET", "")
-NZ_TZ = ZoneInfo(os.environ.get("USER_TZ", "Pacific/Auckland"))
+USER_TZ = ZoneInfo((os.environ.get("USER_TZ") or "UTC"))
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 WEB_DIR = Path(__file__).parent.parent / "web"
 _ALLOWED_PROMPTS = {"identity", "instructions"}
@@ -61,6 +62,20 @@ async def _require_desktop_auth(credentials: HTTPAuthorizationCredentials | None
         raise HTTPException(status_code=500, detail="DESKTOP_SECRET not configured on server")
     if credentials is None or credentials.credentials != DESKTOP_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+async def _require_internal_auth(credentials: HTTPAuthorizationCredentials | None = Security(_bearer)):
+    """Service-to-service auth (Baileys, the ki CLI). Accepts INTERNAL_SECRET as a bearer token.
+
+    The web app's DESKTOP_SECRET is also accepted, so admin actions that the CLI
+    and the web app share (heartbeat trigger, daily note) work from either.
+    """
+    token = credentials.credentials if credentials else None
+    if not token:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if (INTERNAL_SECRET and token == INTERNAL_SECRET) or (DESKTOP_SECRET and token == DESKTOP_SECRET):
+        return
+    raise HTTPException(status_code=401, detail="Unauthorized")
 
 _anthropic = anthropic.AsyncAnthropic(max_retries=3)
 HAIKU = "claude-haiku-4-5-20251001"
@@ -104,7 +119,7 @@ async def _classify_memory(reaction: str, message: str) -> tuple[str, str]:
                 "A user reacted to an AI assistant's message. "
                 "Choose the right memory category and write a clean one-sentence memory about the user.\n\n"
                 "Categories:\n"
-                "- preference: the user likes, dislikes, or has a style/approach preference\n"
+                "- preference: The user likes, dislikes, or has a style/approach preference\n"
                 "- person: the message is primarily about a named person in the user's life\n"
                 "- fact: anything else — what the user did, closed, decided, or their context\n\n"
                 f"Reaction meaning: {emoji_context}\n"
@@ -180,10 +195,10 @@ async def _heartbeat_next_run_time() -> datetime:
         """))
         row = result.first()
     if row is None:
-        return datetime.now(NZ_TZ)
-    last = row[0].astimezone(NZ_TZ)
+        return datetime.now(USER_TZ)
+    last = row[0].astimezone(USER_TZ)
     next_run = last + timedelta(hours=HEARTBEAT_HOURS)
-    now = datetime.now(NZ_TZ)
+    now = datetime.now(USER_TZ)
     return next_run if next_run > now else now
 
 
@@ -239,7 +254,7 @@ def _make_tracked_job(job_id: str, fn, **kwargs):
                     f"{state['consecutive_failures']} failure(s) — resetting back-off"
                 )
             state["consecutive_failures"] = 0
-            state["last_success"] = datetime.now(NZ_TZ).isoformat()
+            state["last_success"] = datetime.now(USER_TZ).isoformat()
             state["backoff_multiplier"] = 1
 
         except Exception as exc:
@@ -401,7 +416,12 @@ async def lifespan(app: FastAPI):
 
     await run_migrations()
     await ensure_collections()
-    await reindex()
+    # A bad OpenAI key or unreachable vault shouldn't stop the web app from
+    # starting — log it and let the vault_sync job retry.
+    try:
+        await reindex()
+    except Exception as e:
+        print(f"[startup] vault index failed (will retry on the next vault sync): {e}")
 
     # Seed prompts from files into DB on first boot (migrate file → DB)
     for _prompt_name in _ALLOWED_PROMPTS:
@@ -414,7 +434,7 @@ async def lifespan(app: FastAPI):
     global _scheduler
     # misfire_grace_time=None: if a cron job was missed while the container was
     # down, fire it immediately on restart rather than silently skipping it.
-    _scheduler = AsyncIOScheduler(timezone=NZ_TZ, job_defaults={"misfire_grace_time": None})
+    _scheduler = AsyncIOScheduler(timezone=USER_TZ, job_defaults={"misfire_grace_time": None})
 
     heartbeat_nrt = await _heartbeat_next_run_time()
     _scheduler.add_job(
@@ -425,6 +445,20 @@ async def lifespan(app: FastAPI):
         next_run_time=heartbeat_nrt,
     )
 
+    # Vault sync: pull remote changes (git vaults with a remote only) and
+    # re-index anything that changed. 
+    async def _vault_sync_job():
+        from .tools.obsidian import pull_vault
+        await pull_vault()
+        await reindex()
+
+    _scheduler.add_job(
+        _make_tracked_job("vault_sync", _vault_sync_job),
+        "interval",
+        minutes=VAULT_SYNC_MINUTES,
+        id="vault_sync",
+    )
+
     # Register schedules from all loaded integrations
     for mod in _INTEGRATIONS:
         for sched in getattr(mod, "SCHEDULES", []):
@@ -432,7 +466,7 @@ async def lifespan(app: FastAPI):
             trigger_type = sched.get("trigger", "interval")
             trigger_kwargs = {k: v for k, v in sched.items() if k not in {"id", "fn", "trigger", "next_run_time_fn"}}
             if trigger_type == "cron":
-                _scheduler.add_job(_make_tracked_job(sched["id"], fn), CronTrigger(**trigger_kwargs, timezone=NZ_TZ), id=sched["id"])
+                _scheduler.add_job(_make_tracked_job(sched["id"], fn), CronTrigger(**trigger_kwargs, timezone=USER_TZ), id=sched["id"])
             else:
                 extra = {}
                 if "next_run_time_fn" in sched:
@@ -466,15 +500,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# Allow the Capacitor iOS app (capacitor://localhost) to make cross-origin requests.
-# Bearer token auth is still enforced on every endpoint — this only relaxes CORS.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["capacitor://localhost", "http://localhost"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 agent = Agent()
 
@@ -541,7 +566,7 @@ async def kill_session(request: Request, body: KillRequest):
 
 
 @app.post("/message")
-async def handle_message(msg: InboundMessage):
+async def handle_message(msg: InboundMessage, _=Depends(_require_internal_auth)):
     # Wrap in a task so it can be cancelled mid-loop via POST /kill.
     task = asyncio.create_task(
         agent.respond(msg.text, image=msg.image, audio=msg.audio, document=msg.document, channel=msg.channel)
@@ -614,7 +639,6 @@ async def _run_agent_task(channel: str, msg: DesktopMessage) -> None:
                 title = reply_preview or "New message"
                 body = ""
             asyncio.create_task(send_push_to_all(title, body))
-            asyncio.create_task(send_apns_to_all("Ki", title if body else title))
 
 
 @app.post("/desktop/stream")
@@ -684,7 +708,7 @@ async def desktop_history(channel: str = "desktop", limit: int = 60, after: str 
 async def desktop_today_note(_=Depends(_require_desktop_auth)):
     """Return today's daily note content for the /today modal. No conversation save."""
     from .tools.obsidian import read_note
-    today = datetime.now(NZ_TZ).strftime("%Y-%m-%d")
+    today = datetime.now(USER_TZ).strftime("%Y-%m-%d")
     daily_note = f"daily/{today}.md"
     try:
         content = await read_note(daily_note)
@@ -1225,7 +1249,7 @@ async def desktop_journal_pdf(_=Depends(_require_desktop_auth)):
     import io
     from playwright.async_api import async_playwright
 
-    now = datetime.now(NZ_TZ)
+    now = datetime.now(USER_TZ)
     gen_date = f"{now.day} {now.strftime('%B %Y')}"
     filename = f"journal-{now.strftime('%Y-%m-%d')}.pdf"
 
@@ -1281,7 +1305,7 @@ async def bridge_to_desktop(_=Depends(_require_desktop_auth)):
         return {"ok": True, "created": False}
 
     convo_text = "\n".join(
-        f"{'Callum' if m['role'] == 'user' else 'Ki'}: {m['content'][:400]}"
+        f"{USER_LABEL if m['role'] == 'user' else 'Ki'}: {m['content'][:400]}"
         for m in messages
     )
     resp = await _anthropic.messages.create(
@@ -1290,7 +1314,7 @@ async def bridge_to_desktop(_=Depends(_require_desktop_auth)):
         messages=[{
             "role": "user",
             "content": (
-                "Callum is switching from a WhatsApp conversation with Ki to his desktop app to continue.\n"
+                "The user is switching from a WhatsApp conversation with Ki to their desktop app to continue.\n"
                 "Write a brief handoff message from Ki (2-3 sentences) that:\n"
                 "- Acknowledges the switch from mobile\n"
                 "- Summarises what was being discussed or worked on\n"
@@ -1365,7 +1389,7 @@ async def desktop_reaction_negative(body: DesktopReaction, _=Depends(_require_de
 
 
 @app.post("/reaction")
-async def handle_reaction(reaction: Reaction):
+async def handle_reaction(reaction: Reaction, _=Depends(_require_internal_auth)):
     """
     Called when the user gives a 👍 to a Ki message on WhatsApp.
     Classifies and saves a memory so Ki stops surfacing the topic.
@@ -1377,7 +1401,7 @@ async def handle_reaction(reaction: Reaction):
 
 
 @app.post("/reaction-negative")
-async def handle_reaction_negative(reaction: Reaction):
+async def handle_reaction_negative(reaction: Reaction, _=Depends(_require_internal_auth)):
     """
     Called when the user gives a 👎 to a Ki message on WhatsApp.
     Marks the row thumbs_down, then classifies the error and saves a tool_rule if applicable.
@@ -1538,33 +1562,15 @@ async def push_unsubscribe(body: PushUnsubscribe, _=Depends(_require_desktop_aut
     return {"ok": True}
 
 
-class APNSToken(BaseModel):
-    token: str
-
-
-@app.post("/push/apns-token")
-async def push_apns_token_save(body: APNSToken, _=Depends(_require_desktop_auth)):
-    """Store an APNs device token from the Capacitor iOS app."""
-    await _mem_module.save_apns_token(body.token)
-    return {"ok": True}
-
-
-@app.post("/push/apns-token/delete")
-async def push_apns_token_delete(body: APNSToken, _=Depends(_require_desktop_auth)):
-    """Remove an APNs device token (user disabled notifications)."""
-    await _mem_module.delete_apns_token(body.token)
-    return {"ok": True}
-
-
 @app.post("/heartbeat/trigger")
-async def trigger_heartbeat():
+async def trigger_heartbeat(_=Depends(_require_internal_auth)):
     """Manually trigger the heartbeat — useful for testing without waiting hours."""
     state = await run_heartbeat(hours=HEARTBEAT_HOURS)
     return {"ok": True, "state": state}
 
 
 @app.post("/daily-note/create")
-async def trigger_daily_note_create():
+async def trigger_daily_note_create(_=Depends(_require_internal_auth)):
     """Manually trigger today's daily note creation immediately."""
     from .integrations.daily_note import run_daily_note_creator
     await run_daily_note_creator()
@@ -1572,7 +1578,7 @@ async def trigger_daily_note_create():
 
 
 @app.get("/integrations")
-async def list_integrations():
+async def list_integrations(_=Depends(_require_desktop_auth)):
     """List all loaded integrations with their tools, schedules, and required env vars."""
     return {
         "integrations": [
@@ -1661,12 +1667,12 @@ async def admin_reminders(_=Depends(_require_desktop_auth)):
 
     reminders = []
     for row in rows:
-        remind_at_nz = row[2].astimezone(NZ_TZ)
+        remind_at_local = row[2].astimezone(USER_TZ)
         reminders.append({
             "id": row[0],
             "message": row[1],
             "remind_at_utc": row[2].isoformat(),
-            "remind_at_nzdt": remind_at_nz.isoformat(),
+            "remind_at_localdt": remind_at_local.isoformat(),
         })
     return {"reminders": reminders}
 
@@ -1807,81 +1813,6 @@ async def admin_put_prompt(name: str, body: dict, _=Depends(_require_desktop_aut
     return {"ok": True}
 
 
-@app.get("/vault-git-internal")
-async def vault_git_internal(args: str):
-    """TEMPORARY internal-only endpoint: run read-only git command against vault.
-    No auth — only accessible from within the Docker network.
-    Remove after vault recovery is complete.
-    """
-    import asyncio, subprocess
-    ALLOWED = ["log", "show", "ls-tree", "ls-files", "diff", "status", "rev-parse", "rev-list"]
-    from .tools.obsidian import VAULT, GIT_ENV
-    arg_list = args.split(" ")
-    sub = arg_list[0] if arg_list else ""
-    if sub not in ALLOWED:
-        raise HTTPException(status_code=403, detail=f"Subcommand '{sub}' not allowed")
-    try:
-        result = await asyncio.to_thread(
-            subprocess.run,
-            ["git", "-C", str(VAULT)] + arg_list,
-            capture_output=True, text=True, timeout=30, env=GIT_ENV,
-        )
-        return {"stdout": result.stdout, "stderr": result.stderr, "returncode": result.returncode}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/vault-recover-internal")
-async def vault_recover_internal(body: dict):
-    """TEMPORARY internal-only endpoint: restore a file from vault git history.
-    No auth — only accessible from within the Docker network.
-    Remove after vault recovery is complete.
-    Accepts: { "commit": "<hash>", "vault_path": "path/to/file.md" }
-          OR: { "content": "<full file text>", "vault_path": "path/to/file.md" }
-    """
-    import asyncio, subprocess
-    from .tools.obsidian import VAULT, GIT_ENV, _git, _safe_path
-
-    commit = (body.get("commit") or "").strip()
-    vault_path = (body.get("vault_path") or "").strip()
-    direct_content = body.get("content")
-
-    if not vault_path:
-        raise HTTPException(status_code=400, detail="vault_path is required")
-    if not commit and direct_content is None:
-        raise HTTPException(status_code=400, detail="either commit or content is required")
-
-    if commit:
-        try:
-            result = await asyncio.to_thread(
-                subprocess.run,
-                ["git", "-C", str(VAULT), "show", f"{commit}:{vault_path}"],
-                capture_output=True, text=True, timeout=30, env=GIT_ENV,
-            )
-            if result.returncode != 0:
-                raise HTTPException(status_code=404, detail=f"git show failed: {result.stderr.strip()}")
-            file_content = result.stdout
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-    else:
-        file_content = direct_content
-
-    try:
-        path = _safe_path(vault_path)
-        await _git("pull", "--quiet", "--autostash")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(file_content)
-        await _git("add", vault_path)
-        await _git("commit", "-m", f"restore: {vault_path} from git history")
-        await _git("push")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Restore failed: {e}")
-
-    return {"ok": True, "restored": vault_path, "content": file_content}
-
-
 @app.get("/admin/vault-git")
 async def admin_vault_git(args: str, _=Depends(_require_desktop_auth)):
     """Run a read-only git command against the vault. Pass args as space-separated string.
@@ -1963,6 +1894,10 @@ async def admin_logs(service: str, lines: int = 200, _=Depends(_require_desktop_
     container = _LOG_SERVICE_MAP.get(service)
     if not container:
         raise HTTPException(status_code=400, detail=f"Unknown service '{service}'. Allowed: {list(_LOG_SERVICE_MAP)}")
+    if not os.path.exists("/var/run/docker.sock"):
+        return {"service": service, "container": container,
+                "lines": f"[Logs aren't available here: the api container has no Docker socket. "
+                         f"Run `docker compose logs {service}` on the host instead.]\n"}
     try:
         import docker as _docker
         import asyncio as _asyncio
@@ -1987,33 +1922,6 @@ async def admin_logs(service: str, lines: int = 200, _=Depends(_require_desktop_
         return {"service": service, "container": container, "lines": combined}
     except Exception as e:
         return {"service": service, "container": container, "lines": f"[Log fetch failed: {e}]\n"}
-
-
-@app.post("/admin/deploy")
-async def admin_deploy(_auth=Depends(_require_desktop_auth)):
-    """Proxy to coding-agent /deploy — canonical deploy path."""
-    coding_agent_url = os.environ.get("CODING_AGENT_URL", "http://coding-agent:3002")
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as c:
-            r = await c.post(f"{coding_agent_url}/deploy", json={})
-            data = r.json()
-        return data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Deploy failed: {e}")
-
-
-@app.get("/totp")
-async def totp(secret: str):
-    """Return the current TOTP code for the given base32 secret.
-
-    Example: GET /totp?secret=ABC123 → {"code": "123456"}
-    """
-    try:
-        import pyotp
-        code = pyotp.TOTP(secret).now()
-        return {"code": code}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid TOTP secret: {e}")
 
 
 @app.get("/auth/google")
@@ -2132,15 +2040,8 @@ async def health():
     return {"status": "ok"}
 
 
-@app.get("/probe-browser-use")
-async def probe_browser_use():
-    """Temporary introspection endpoint — diagnose browser_use LLM structure."""
-    from ._probe_browser_use import run_probe
-    return run_probe()
-
-
 @app.get("/usage")
-async def usage():
+async def usage(_=Depends(_require_desktop_auth)):
     """Token usage and estimated cost, broken down by 3d / 7d / 30d periods."""
     # Costs per 1M tokens (input/cache_write/cache_read/output) + optional per_request flat rate
     COSTS = {
@@ -2235,7 +2136,7 @@ async def usage():
             }
             result_out[key] = {"rows": model_rows, "use_case_rows": use_case_rows, "totals": totals}
 
-    _user_tz_name = os.environ.get("USER_TZ", "Pacific/Auckland")
+    _user_tz_name = (os.environ.get("USER_TZ") or "UTC")
     # Daily breakdown for the last 30 days (user's local timezone)
     daily_rows: list[dict] = []
     async with SessionLocal() as session:
@@ -2278,6 +2179,13 @@ async def usage():
 
 
 @app.get("/")
+async def root():
+    # A self-hosted instance opens straight into the web app. The project's
+    # landing page is still available at /about.
+    return RedirectResponse("/app/")
+
+
+@app.get("/about")
 async def marketing_index():
     return FileResponse(WEB_DIR / "marketing" / "index.html")
 

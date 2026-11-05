@@ -1,6 +1,11 @@
 """
 Obsidian vault tools — search, read, append, write.
-All write operations pull before modifying, then commit and push.
+
+The vault is any Obsidian vault folder. Git is optional:
+  - plain folder          → files are written directly, no git at all
+  - git repo, no remote   → every write is committed (local history only)
+  - git repo with remote  → pull before writing, commit, then push
+Set VAULT_GIT_SYNC=off to skip pull/push even when a remote exists.
 """
 import asyncio
 import os
@@ -15,11 +20,19 @@ from ..vector_store import client as qdrant
 
 VAULT = Path(os.environ.get("OBSIDIAN_VAULT_PATH", "/vault"))
 COLLECTION = "obsidian"
-SSH_KEY = "/root/.ssh/ki_vault_deploy_key"
+# Optional SSH deploy key for pushing/pulling a private vault repo over SSH.
+SSH_KEY = os.environ.get("VAULT_SSH_KEY", "/secrets/vault_deploy_key")
+VAULT_GIT_SYNC = os.environ.get("VAULT_GIT_SYNC", "auto").strip().lower()
 GIT_ENV = {
+    # Commits need an identity; the container has none by default.
+    "GIT_AUTHOR_NAME": "Ki",
+    "GIT_AUTHOR_EMAIL": "ki@localhost",
+    "GIT_COMMITTER_NAME": "Ki",
+    "GIT_COMMITTER_EMAIL": "ki@localhost",
     **os.environ,
-    "GIT_SSH_COMMAND": f"ssh -i {SSH_KEY} -o StrictHostKeyChecking=no",
 }
+if os.path.isfile(SSH_KEY):
+    GIT_ENV["GIT_SSH_COMMAND"] = f"ssh -i {SSH_KEY} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
 
 # ---------------------------------------------------------------------------
 # String normalisation helpers
@@ -64,14 +77,52 @@ def _normalise(text: str) -> str:
     return text
 
 
+def vault_is_git() -> bool:
+    return (VAULT / ".git").exists()
+
+
+def vault_has_remote() -> bool:
+    if VAULT_GIT_SYNC in ("off", "false", "0", "no") or not vault_is_git():
+        return False
+    result = subprocess.run(
+        ["git", "-C", str(VAULT), "remote"],
+        env=GIT_ENV, capture_output=True, text=True, timeout=10,
+    )
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
 def _git_sync(*args: str) -> None:
-    """Blocking git subprocess call — always run via _git() in async context."""
+    """Blocking git subprocess call — always run via _git() in async context.
+
+    No-op when the vault isn't a git repo; pull/push are skipped when it has
+    no remote. A commit with nothing to commit is not an error.
+    """
+    if not args or not vault_is_git():
+        return
+    if args[0] in ("pull", "push", "fetch") and not vault_has_remote():
+        return
+    if args[0] == "commit":
+        result = subprocess.run(
+            ["git", "-C", str(VAULT), *args],
+            env=GIT_ENV, capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0 and "nothing to commit" not in (result.stdout + result.stderr):
+            raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
+        return
     subprocess.run(["git", "-C", str(VAULT), *args], env=GIT_ENV, check=True, timeout=30)
 
 
 async def _git(*args: str) -> None:
     """Non-blocking wrapper: runs the git subprocess in a thread pool executor."""
     await asyncio.to_thread(_git_sync, *args)
+
+
+async def pull_vault() -> None:
+    """Pull remote vault changes, if the vault has a remote. Errors are logged, not raised."""
+    try:
+        await _git("pull", "--quiet", "--autostash")
+    except Exception as e:
+        print(f"[vault] pull failed: {e}")
 
 
 def _safe_path(filename: str) -> Path:
@@ -726,11 +777,11 @@ async def write_note(filename: str, content: str, overwrite: bool = False) -> st
     if path.exists() and not overwrite:
         return f"Note already exists: {filename}. Set overwrite=True to replace it."
 
+    action = "overwrite" if path.exists() else "create"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
 
     await _git("add", str(path.relative_to(VAULT)))
-    action = "overwrite" if path.exists() else "create"
     await _git("commit", "-m", f"ki: {action} {filename}")
     await _git("push")
     return f"Written: {filename}"

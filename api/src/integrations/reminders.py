@@ -1,5 +1,5 @@
 """
-Reminders integration — lets Ki set, list, and cancel scheduled reminders for Callum.
+Reminders integration — lets Ki set, list, and cancel scheduled reminders for the user.
 
 Tools:
   set_reminder    — schedule a reminder at a given local datetime
@@ -22,15 +22,15 @@ log = logging.getLogger(__name__)
 
 REQUIRED_ENV_VARS: list[str] = []
 
-USER_TZ = ZoneInfo(os.environ.get("USER_TZ", "Pacific/Auckland"))
+USER_TZ = ZoneInfo((os.environ.get("USER_TZ") or "UTC"))
 UTC     = ZoneInfo("UTC")
 
 TOOL_SCHEMAS = [
     {
         "name": "set_reminder",
         "description": (
-            "Schedule a reminder message to be sent to Callum at a specific time. "
-            "Use this when Callum asks to be reminded about something at a future date/time. "
+            "Schedule a reminder message to be sent to the user at a specific time. "
+            "Use this when the user asks to be reminded about something at a future date/time. "
             "remind_at should be an ISO 8601 datetime string in the user's local timezone — "
             "e.g. '2025-06-15T15:00:00'."
         ),
@@ -39,7 +39,7 @@ TOOL_SCHEMAS = [
             "properties": {
                 "message": {
                     "type": "string",
-                    "description": "What to remind Callum about.",
+                    "description": "What to remind the user about.",
                 },
                 "remind_at": {
                     "type": "string",

@@ -10,6 +10,43 @@ app.use(express.json({ limit: "4mb" }));
 const PORT = 3002;
 const REPO_ROOT = "/repo";
 
+// Pushing commits is opt-in. By default the coding agent commits locally only,
+// so a fresh clone of the repo never tries to push to someone else's remote.
+const GIT_PUSH = ["1", "true", "yes"].includes((process.env.CODING_AGENT_GIT_PUSH || "").toLowerCase());
+
+// The repo's path on the Docker host. `docker compose` resolves relative
+// paths (build contexts, bind mounts) against it, so self-deploys build the
+// same files the host sees. The entrypoint symlinks it to /repo.
+const REPO_HOST_PATH = process.env.REPO_HOST_PATH || "";
+
+// Every endpoint requires INTERNAL_SECRET. This service can rewrite the repo
+// and drive the Docker socket, and it shares a network with the headless
+// browser, so it must not trust anything that can merely reach it.
+const INTERNAL_SECRET = process.env.INTERNAL_SECRET || "";
+if (!INTERNAL_SECRET) {
+  console.error("[coding-agent] INTERNAL_SECRET is required");
+  process.exit(1);
+}
+app.use((req, res, next) => {
+  if (req.path === "/health") return next();
+  if (req.get("authorization") !== `Bearer ${INTERNAL_SECRET}`) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  next();
+});
+
+function currentBranch() {
+  const r = spawnSync("git", ["-C", REPO_ROOT, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" });
+  return (r.stdout || "main").trim() || "main";
+}
+
+function composeArgs(...rest) {
+  // --project-directory must be the host path so the Docker daemon gets host
+  // paths for bind mounts; -f reads the compose file through the /repo mount.
+  const dir = REPO_HOST_PATH || REPO_ROOT;
+  return ["compose", "--project-directory", dir, "-f", `${dir}/docker-compose.yml`, ...rest];
+}
+
 let _runningChild = null;
 
 // ── Claude Code runner ────────────────────────────────────────────────────────
@@ -157,10 +194,17 @@ function gitCommitAndPush(filePaths, taskSummary) {
     console.log(`[coding-agent] committed: ${msg}`);
   }
 
+  if (!GIT_PUSH) {
+    console.log(`[coding-agent] committed locally (CODING_AGENT_GIT_PUSH is off)`);
+    return null;
+  }
+
+  const branch = currentBranch();
+
   // Pull --rebase before pushing so divergent histories don't block us.
   {
     const pullResult = spawnSync(
-      "git", ["-C", REPO_ROOT, "pull", "--rebase", "origin", "main"],
+      "git", ["-C", REPO_ROOT, "pull", "--rebase", "origin", branch],
       { encoding: "utf8", timeout: 60000 }
     );
     if (pullResult.status !== 0) {
@@ -173,7 +217,7 @@ function gitCommitAndPush(filePaths, taskSummary) {
 
   {
     const pushResult = spawnSync(
-      "git", ["-C", REPO_ROOT, "push", "origin", "main"],
+      "git", ["-C", REPO_ROOT, "push", "origin", branch],
       { encoding: "utf8", timeout: 60000 }
     );
     if (pushResult.status !== 0) {
@@ -241,60 +285,6 @@ app.post("/code", async (req, res) => {
 
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
 
-// ── Vault git inspection endpoint ─────────────────────────────────────────────
-// Proxies vault git commands to the api container (which has /vault mounted).
-// POST /vault-git  { "args": ["log","--all","--oneline","--","*filename*"] }
-app.post("/vault-git", async (req, res) => {
-  const { args } = req.body ?? {};
-  if (!Array.isArray(args) || args.length === 0) {
-    return res.status(400).json({ error: "args array required" });
-  }
-  const ALLOWED = ["log", "show", "ls-tree", "ls-files", "diff", "status", "cat-file", "rev-list", "branch", "tag", "stash", "rev-parse"];
-  const sub = args[0];
-  if (!ALLOWED.includes(sub)) {
-    return res.status(403).json({ error: `Subcommand '${sub}' not permitted. Allowed: ${ALLOWED.join(", ")}` });
-  }
-  try {
-    // Try the api container's internal vault-git endpoint first
-    const argsStr = args.join(" ");
-    const apiResp = await fetch(`http://api:8000/vault-git-internal?args=${encodeURIComponent(argsStr)}`);
-    if (apiResp.ok) {
-      const data = await apiResp.json();
-      return res.json({ output: data.stdout || data.stderr || "" });
-    }
-    // Fallback: try direct /opt/vault access (may not be mounted in this container)
-    const VAULT = "/opt/vault";
-    const out = execSync(
-      `git -C ${JSON.stringify(VAULT)} ${args.map(a => JSON.stringify(a)).join(" ")}`,
-      { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 }
-    );
-    return res.json({ output: out });
-  } catch (e) {
-    return res.json({ output: (e.stdout || e.stderr || e.message || "git error").trim(), exit_code: e.status ?? 1 });
-  }
-});
-
-// ── Vault recover endpoint ─────────────────────────────────────────────────────
-// Proxies vault file recovery to the api container.
-// POST /vault-recover  { "commit": "<hash>", "vault_path": "path/to/file.md" }
-app.post("/vault-recover", async (req, res) => {
-  const { commit, vault_path } = req.body ?? {};
-  if (!commit || !vault_path) {
-    return res.status(400).json({ error: "commit and vault_path required" });
-  }
-  try {
-    const apiResp = await fetch("http://api:8000/vault-recover-internal", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ commit, vault_path }),
-    });
-    const data = await apiResp.json();
-    return res.json(data);
-  } catch (e) {
-    return res.status(500).json({ error: e.message });
-  }
-});
-
 app.post("/kill", (req, res) => {
   if (_runningChild && !_runningChild.killed) {
     _runningChild.kill("SIGKILL");
@@ -315,7 +305,6 @@ const _LOG_SERVICE_CONTAINERS = {
   "postgres":     "ki-postgres-1",
   "qdrant":       "ki-qdrant-1",
   "phoenix":      "ki-phoenix-1",
-  "vault-sync":   "ki-api-1",   // vault indexer runs at api startup
 };
 
 app.post("/logs", (req, res) => {
@@ -356,7 +345,7 @@ app.post("/restart", (req, res) => {
   setImmediate(() => {
     console.log("[restart] Restarting api and coding-agent containers...");
     // Use 'docker restart' directly — avoids needing a compose file path that resolves
-    // differently inside the container (/repo) vs on the host (/opt/ki).
+    // differently inside the container (/repo) vs on the host.
     const result = spawnSync(
       "docker",
       ["restart", "ki-api-1", "ki-coding-agent-1"],
@@ -389,18 +378,21 @@ app.post("/deploy", (req, res) => {
     };
 
     try {
-      // 1. Pull latest code
-      log("Pulling latest code...");
-      const pullResult = spawnSync(
-        "git", ["-C", REPO_ROOT, "pull", "--rebase", "origin", "main"],
-        { encoding: "utf8", timeout: 60000 }
-      );
-      if (pullResult.stdout) output += pullResult.stdout;
-      if (pullResult.stderr) output += pullResult.stderr;
+      // 1. Pull latest code (only when pushing is on — otherwise the local
+      //    working tree is the source of truth)
+      if (GIT_PUSH) {
+        log("Pulling latest code...");
+        const pullResult = spawnSync(
+          "git", ["-C", REPO_ROOT, "pull", "--rebase", "origin", currentBranch()],
+          { encoding: "utf8", timeout: 60000 }
+        );
+        if (pullResult.stdout) output += pullResult.stdout;
+        if (pullResult.stderr) output += pullResult.stderr;
 
-      if (pullResult.status !== 0) {
-        log(`git pull --rebase failed (exit ${pullResult.status})`);
-        return;
+        if (pullResult.status !== 0) {
+          log(`git pull --rebase failed (exit ${pullResult.status})`);
+          return;
+        }
       }
 
       const newHead = execSync(
@@ -409,13 +401,12 @@ app.post("/deploy", (req, res) => {
       ).trim();
       log(`HEAD is now ${newHead.slice(0, 7)}`);
 
-      // 2. Rebuild all services
-      // -f /repo/docker-compose.yml: path inside the container (repo is bind-mounted at /repo)
-      // -p ki: explicit project name matching what the host created, so containers are identified correctly
-      log("Rebuilding api, baileys, and coding-agent containers (this may take a few minutes)...");
+      // 2. Rebuild. No service list: `up` starts whatever COMPOSE_PROFILES in
+      //    .env enables, so a disabled service (e.g. WhatsApp) stays off.
+      log("Rebuilding containers (this may take a few minutes)...");
       const upResult = spawnSync(
         "docker",
-        ["compose", "-f", "/repo/docker-compose.yml", "-p", "ki", "up", "--build", "-d", "api", "baileys", "coding-agent"],
+        composeArgs("up", "--build", "-d"),
         { encoding: "utf8", timeout: 360000, env: { ...process.env, CACHEBUST: Date.now().toString() } }
       );
       if (upResult.stdout) output += upResult.stdout;
@@ -452,10 +443,12 @@ app.post("/deploy", (req, res) => {
       if (revertResult.stdout) output += revertResult.stdout;
       if (revertResult.stderr) output += revertResult.stderr;
 
-      spawnSync("git", ["-C", REPO_ROOT, "push", "origin", "main"], { encoding: "utf8", timeout: 60000 });
+      if (GIT_PUSH) {
+        spawnSync("git", ["-C", REPO_ROOT, "push", "origin", currentBranch()], { encoding: "utf8", timeout: 60000 });
+      }
       spawnSync(
         "docker",
-        ["compose", "-f", "/repo/docker-compose.yml", "-p", "ki", "up", "--build", "-d", "api", "baileys", "coding-agent"],
+        composeArgs("up", "--build", "-d"),
         { encoding: "utf8", timeout: 360000, env: { ...process.env, CACHEBUST: Date.now().toString() } }
       );
       log("Rolled back to previous version.");

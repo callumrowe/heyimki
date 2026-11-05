@@ -13,12 +13,25 @@ const qrcode = require('qrcode-terminal')
 const fs = require('fs')
 
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://api:8000'
-const ALLOWED_JID = process.env.ALLOWED_JID
+// The single WhatsApp chat Ki talks to. Leave it unset on first run: Baileys
+// then answers nobody and logs the JID of every chat that messages it, so you
+// can copy yours into YOUR_WHATSAPP_JID in .env.
+const ALLOWED_JID = (process.env.ALLOWED_JID || '').trim()
 const INTERNAL_SECRET = process.env.INTERNAL_SECRET || ''
 
-if (!ALLOWED_JID) {
-  console.error('ALLOWED_JID env var is required')
+if (!INTERNAL_SECRET) {
+  console.error('INTERNAL_SECRET env var is required')
   process.exit(1)
+}
+if (!ALLOWED_JID) {
+  console.log('[setup] YOUR_WHATSAPP_JID is not set — Ki will not reply to anyone yet.')
+  console.log('[setup] Scan the QR code, then message this WhatsApp account from your own phone.')
+}
+
+// Sent on every call to the api. The api rejects unauthenticated callers.
+const API_HEADERS = {
+  'Content-Type': 'application/json',
+  'Authorization': `Bearer ${INTERNAL_SECRET}`,
 }
 
 // Module-level socket reference so the HTTP server can reach it
@@ -31,6 +44,9 @@ http.createServer((req, res) => {
 
   if (req.method !== 'POST' || (pathname !== '/send' && pathname !== '/send-image' && pathname !== '/send-document' && pathname !== '/send-voice-note')) {
     res.writeHead(404); res.end(); return
+  }
+  if (!ALLOWED_JID) {
+    res.writeHead(503); res.end('YOUR_WHATSAPP_JID is not configured'); return
   }
 
   const chunks = []
@@ -184,7 +200,7 @@ async function callAgent(text, image = null, audio = null, document = null, atte
   try {
     const res = await fetch(`${AGENT_API_URL}/message`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: API_HEADERS,
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(300_000), // 5 min — browser tasks need it
     })
@@ -207,7 +223,7 @@ async function callAgent(text, image = null, audio = null, document = null, atte
 async function callReaction(messageText) {
   const res = await fetch(`${AGENT_API_URL}/reaction`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: API_HEADERS,
     body: JSON.stringify({ message: messageText }),
     signal: AbortSignal.timeout(10_000),
   })
@@ -217,7 +233,7 @@ async function callReaction(messageText) {
 async function callReactionNegative(messageText, fallback = false) {
   const res = await fetch(`${AGENT_API_URL}/reaction-negative`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: API_HEADERS,
     body: JSON.stringify(fallback ? { message: null, fallback: true } : { message: messageText }),
     signal: AbortSignal.timeout(10_000),
   })
@@ -259,6 +275,15 @@ async function start() {
 
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     for (const msg of messages) {
+      // Only the allowlisted chat is handled. Until one is configured, log the
+      // JID of anyone who messages so the owner can find theirs.
+      if (!ALLOWED_JID || msg.key.remoteJid !== ALLOWED_JID) {
+        if (!ALLOWED_JID && type === 'notify' && !msg.key.fromMe && msg.key.remoteJid) {
+          console.log(`[setup] message from ${msg.key.remoteJid} — if that's you, set YOUR_WHATSAPP_JID=${msg.key.remoteJid} in .env and restart baileys + api`)
+        }
+        continue
+      }
+
       // Reactions can arrive with any type and fromMe=true — check first
       const reaction = msg.message?.reactionMessage
       if (reaction) {
@@ -287,9 +312,6 @@ async function start() {
 
       // Ignore messages sent by us
       if (msg.key.fromMe) continue
-
-      // Only respond to the allowlisted JID
-      if (msg.key.remoteJid !== ALLOWED_JID) continue
 
       // Dedup — skip messages we've already processed (e.g. re-delivered after reconnect)
       const msgId = msg.key.id

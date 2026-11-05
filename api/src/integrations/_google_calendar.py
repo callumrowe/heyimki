@@ -31,14 +31,14 @@ _NO_SCOPE = (
     "Go to the Ki admin page (System tab), disconnect Google, then reconnect to grant calendar access."
 )
 _CALENDAR_BASE = "https://www.googleapis.com/calendar/v3"
-_TZ_NAME = os.environ.get("USER_TZ", "Pacific/Auckland")
+_TZ_NAME = (os.environ.get("USER_TZ") or "UTC")
 _TZ = ZoneInfo(_TZ_NAME)
 
 TOOL_SCHEMAS = [
     {
         "name": "get_upcoming_events",
         "description": (
-            "Get Callum's upcoming Google Calendar events. "
+            "Get the user's upcoming Google Calendar events. "
             "Returns events from now to N days ahead (default 7). "
             "Use when asked about what's coming up, his schedule, or calendar events."
         ),
@@ -66,7 +66,7 @@ TOOL_SCHEMAS = [
     {
         "name": "search_calendar",
         "description": (
-            "Search Callum's Google Calendar events by keyword and/or date range. "
+            "Search the user's Google Calendar events by keyword and/or date range. "
             "Use when looking for specific meetings, appointments, or events by name."
         ),
         "input_schema": {
@@ -100,9 +100,9 @@ TOOL_SCHEMAS = [
     {
         "name": "create_calendar_event",
         "description": (
-            "Create a new event in Callum's Google Calendar. "
+            "Create a new event in the user's Google Calendar. "
             "Times are treated as the user's local time unless a timezone offset is included."
-            "Always confirm with Callum before creating — this creates a real calendar entry."
+            "Always confirm with the user before creating — this creates a real calendar entry."
         ),
         "input_schema": {
             "type": "object",
@@ -138,7 +138,7 @@ TOOL_SCHEMAS = [
             "Update an existing Google Calendar event by ID. "
             "Only the fields you provide will change — others stay as-is. "
             "Use get_upcoming_events or search_calendar first to find the event ID. "
-            "Always confirm with Callum before updating."
+            "Always confirm with the user before updating."
         ),
         "input_schema": {
             "type": "object",
@@ -168,7 +168,7 @@ TOOL_SCHEMAS = [
         "name": "delete_calendar_event",
         "description": (
             "Delete a Google Calendar event by ID. This is permanent and cannot be undone. "
-            "Always confirm with Callum before deleting."
+            "Always confirm with the user before deleting."
         ),
         "input_schema": {
             "type": "object",
@@ -186,7 +186,7 @@ TOOL_SCHEMAS = [
     {
         "name": "list_calendars",
         "description": (
-            "List all calendars in Callum's Google account with their IDs and names. "
+            "List all calendars in the user's Google account with their IDs and names. "
             "Use this to find the calendar_id for non-primary calendars before creating or searching events."
         ),
         "input_schema": {

@@ -1,0 +1,9 @@
+# Used by the `https` compose profile. KI_DOMAIN comes from .env.
+# Caddy obtains and renews a Let's Encrypt certificate for it automatically.
+{$KI_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy api:8000 {
+		# Stream chat responses (server-sent events) without buffering
+		flush_interval -1
+	}
+}

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from zoneinfo import ZoneInfo
 
-_USER_TZ_NAME = os.environ.get("USER_TZ", "Pacific/Auckland")
+_USER_TZ_NAME = (os.environ.get("USER_TZ") or "UTC")
 
 import httpx
 import sqlalchemy as sa
@@ -27,9 +27,9 @@ TOOL_SCHEMAS = [
     {
         "name": "search_gmail",
         "description": (
-            "Search Callum's Gmail using Gmail query syntax. "
+            "Search the user's Gmail using Gmail query syntax. "
             "Use when asked about emails, messages, or anything in his inbox. "
-            "Examples: 'from:becky', 'subject:visa', 'after:2026/04/01', 'is:unread label:inbox'."
+            "Examples: 'from:alex', 'subject:visa', 'after:2026/04/01', 'is:unread label:inbox'."
         ),
         "input_schema": {
             "type": "object",
@@ -60,7 +60,7 @@ TOOL_SCHEMAS = [
     {
         "name": "send_email",
         "description": (
-            "Send an email from Callum's Gmail account, or reply to an existing email. "
+            "Send an email from the user's Gmail account, or reply to an existing email. "
             "Always call request_confirmation before sending — this is irreversible."
         ),
         "input_schema": {
@@ -80,7 +80,7 @@ TOOL_SCHEMAS = [
     {
         "name": "list_recent_emails",
         "description": (
-            "List recent emails in Callum's Gmail inbox with sender, subject, and date. "
+            "List recent emails in the user's Gmail inbox with sender, subject, and date. "
             "Use for a quick overview of what's in his inbox without a specific search."
         ),
         "input_schema": {
@@ -93,8 +93,8 @@ TOOL_SCHEMAS = [
     {
         "name": "search_drive",
         "description": (
-            "Search Callum's Google Drive files by name or content keywords. "
-            "Use when asked about documents, spreadsheets, or any files stored in his Drive."
+            "Search the user's Google Drive files by name or content keywords. "
+            "Use when asked about documents, spreadsheets, or any files stored in their Drive."
         ),
         "input_schema": {
             "type": "object",
@@ -110,7 +110,7 @@ TOOL_SCHEMAS = [
         "description": (
             "Read the contents of a Google Drive file. "
             "Works with Google Docs (exported as plain text), Sheets (as CSV), Presentations, and text files. "
-            "Use when Callum asks about a document stored in his Drive."
+            "Use when the user asks about a document stored in their Drive."
         ),
         "input_schema": {
             "type": "object",
@@ -126,7 +126,7 @@ TOOL_SCHEMAS = [
     {
         "name": "list_drive_files",
         "description": (
-            "List files in Callum's Google Drive, sorted by most recently modified. "
+            "List files in the user's Google Drive, sorted by most recently modified. "
             "Optionally scope to a specific folder using its ID."
         ),
         "input_schema": {
@@ -144,7 +144,7 @@ TOOL_SCHEMAS = [
         "name": "update_google_doc",
         "description": (
             "Replace the entire content of a Google Doc with new plain text. "
-            "Use when Callum wants to update or rewrite a document in his Drive. "
+            "Use when the user wants to update or rewrite a document in their Drive. "
             "Use read_drive_file first if you need to see the current content. "
             "Always call request_confirmation before making significant changes."
         ),
@@ -167,7 +167,7 @@ TOOL_SCHEMAS = [
         "name": "draft_email",
         "description": (
             "Create a Gmail draft without sending it. "
-            "Use when Callum wants to compose something to review before sending."
+            "Use when the user wants to compose something to review before sending."
         ),
         "input_schema": {
             "type": "object",
@@ -182,7 +182,7 @@ TOOL_SCHEMAS = [
     {
         "name": "get_upcoming_events",
         "description": (
-            "List Callum's upcoming Google Calendar events. "
+            "List the user's upcoming Google Calendar events. "
             "Returns event title, start/end times, location, and description snippet. "
             "Times are shown in the event's original timezone."
         ),
@@ -198,7 +198,7 @@ TOOL_SCHEMAS = [
     {
         "name": "search_calendar",
         "description": (
-            "Search Callum's Google Calendar events by keyword. "
+            "Search the user's Google Calendar events by keyword. "
             "Optionally filter by date range using YYYY-MM-DD strings. "
             "Times without a timezone offset are treated as the user's local time."
         ),
@@ -217,7 +217,7 @@ TOOL_SCHEMAS = [
     {
         "name": "create_calendar_event",
         "description": (
-            "Create a new event in Callum's Google Calendar. "
+            "Create a new event in the user's Google Calendar. "
             "Times without a timezone offset are treated as the user's local time. "
             "Always call request_confirmation before creating — this is irreversible."
         ),
@@ -290,7 +290,7 @@ TOOL_SCHEMAS = [
     {
         "name": "list_calendars",
         "description": (
-            "List all of Callum's Google Calendars with their names and IDs. "
+            "List all of the user's Google Calendars with their names and IDs. "
             "Use when you need a calendar ID other than 'primary'."
         ),
         "input_schema": {

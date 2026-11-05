@@ -4,7 +4,7 @@ Reminder checker — runs every minute, fires any due reminders.
 Queries the reminders table for rows where:
   remind_at <= now() AND sent = false AND cancelled = false
 
-For each match, sends Callum a WhatsApp message via Baileys and marks
+For each match, sends the user a WhatsApp message via Baileys and marks
 the row as sent.
 """
 import sqlalchemy as sa

@@ -29,7 +29,8 @@ def _load_heartbeat_prompt_template() -> str:
     """Load the heartbeat system prompt template from api/prompts/heartbeat.md."""
     path = PROMPTS_DIR / "heartbeat.md"
     if path.exists():
-        return path.read_text(encoding="utf-8").strip()
+        from .config import render
+        return render(path.read_text(encoding="utf-8").strip())
     raise FileNotFoundError(f"Heartbeat prompt not found at {path}")
 
 HAIKU = "claude-haiku-4-5-20251001"
@@ -40,7 +41,7 @@ INTERNAL_SECRET = os.environ.get("INTERNAL_SECRET", "")
 PROACTIVE_COOLDOWN_HOURS = 2
 QUIET_START = int(os.environ.get("HEARTBEAT_QUIET_START", "22"))  # 10pm
 QUIET_END = int(os.environ.get("HEARTBEAT_QUIET_END", "7"))       # 7am
-USER_TZ = ZoneInfo(os.environ.get("USER_TZ", "Pacific/Auckland"))
+USER_TZ = ZoneInfo((os.environ.get("USER_TZ") or "UTC"))
 
 _client = anthropic.AsyncAnthropic(max_retries=3)
 
@@ -327,12 +328,12 @@ async def _synthesise(
     if active_snoozes:
         snooze_block = "\n\nACTIVELY SNOOZED ITEMS — HARD RULE: These MUST NOT appear in things_to_mention. Do not raise them, hint at them, or reference them in the proactive message under any circumstances:\n" + "\n".join(f"- {s}" for s in active_snoozes)
 
-    # Build reminder suppression block — items Callum has already set a reminder for
+    # Build reminder suppression block — items the user has already set a reminder for
     # should NEVER appear in the heartbeat message; the reminder itself will handle them.
     reminder_block = ""
     if pending_reminders:
         reminder_block = (
-            "\n\nPENDING REMINDERS — HARD RULE: Callum has already set a reminder for each of these. "
+            "\n\nPENDING REMINDERS — HARD RULE: The user has already set a reminder for each of these. "
             "Do NOT surface them in things_to_mention, do NOT mention them in the proactive_message, "
             "and do NOT include them in open_loops or ki_commitments. "
             "The reminder will handle them — the heartbeat must not double-nag:\n"
@@ -398,7 +399,7 @@ async def _synthesise(
     if calendar_events and calendar_events.strip():
         calendar_block = (
             "\n\nCalendar — today and tomorrow (include any time-sensitive meetings or "
-            "appointments in things_to_mention if Callum needs to prepare or act):\n"
+            "appointments in things_to_mention if the user needs to prepare or act):\n"
             + calendar_events
         )
 
@@ -418,7 +419,7 @@ async def _synthesise(
     if recent_12h_text and recent_12h_text.strip() and recent_12h_text.strip() != _no_convos:
         recent_12h_suppression_block = (
             "\n\nHARD SUPPRESSION RULE — DO NOT RE-RAISE RECENTLY DISCUSSED TOPICS:\n"
-            "The following conversations happened in the last 12 hours. Callum ALREADY KNOWS "
+            "The following conversations happened in the last 12 hours. The user ALREADY KNOWS "
             "everything in them. You MUST NOT put any of these topics in things_to_mention "
             "UNLESS all three conditions are true:\n"
             "  1. The item has a hard deadline or required action within the next 24 hours\n"
@@ -745,11 +746,8 @@ async def _send_proactive(text: str) -> None:
     # Ki app is primary — always deliver here first
     await mem.save_turn(user="", assistant=text, channel="desktop")
     try:
-        from .push import send_push_to_all, send_apns_to_all
-        await asyncio.gather(
-            send_push_to_all(text.strip()[:120], ""),
-            send_apns_to_all("Ki", text.strip()[:120]),
-        )
+        from .push import send_push_to_all
+        await send_push_to_all(text.strip()[:120], "")
     except Exception as e:
         print(f"[heartbeat] push notification failed (non-fatal): {e}")
 
@@ -899,7 +897,7 @@ async def run_heartbeat(hours: int = 3) -> dict:
                         state["snoozed"].append({
                             "item": item,
                             "reason": "Already raised in proactive message",
-                            "until": "something changes or Callum brings it up",
+                            "until": "something changes or the user brings it up",
                             "resurface_after": resurface,
                         })
                 state["things_to_mention"] = []
