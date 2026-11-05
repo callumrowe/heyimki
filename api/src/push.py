@@ -1,27 +1,15 @@
 """Push notification utility.
 
-Web push (browsers + PWA): uses pywebpush + VAPID.
-APNs (native iOS via Capacitor): JWT-signed HTTP/2 to api.push.apple.com.
-  Needs: APNS_KEY_ID, APNS_TEAM_ID, APNS_BUNDLE_ID, APNS_AUTH_KEY (p8 contents).
-  Set APNS_SANDBOX=true for AltStore/development builds (uses api.sandbox.push.apple.com).
+Web push (browsers + the installed PWA): uses pywebpush + VAPID. Optional —
+everything is a no-op until VAPID_PRIVATE_KEY / VAPID_PUBLIC_KEY are set.
 """
 import asyncio
 import json
 import os
-import time
 
 VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY", "")
 VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY", "")
 VAPID_SUBJECT = os.environ.get("VAPID_SUBJECT", "mailto:you@example.com")
-
-APNS_KEY_ID = os.environ.get("APNS_KEY_ID", "")
-APNS_TEAM_ID = os.environ.get("APNS_TEAM_ID", "")
-APNS_BUNDLE_ID = os.environ.get("APNS_BUNDLE_ID", "com.example.ki")
-# The .p8 file contents — store with literal \n if using a single-line env var
-_APNS_AUTH_KEY_RAW = os.environ.get("APNS_AUTH_KEY", "")
-APNS_AUTH_KEY = _APNS_AUTH_KEY_RAW.replace("\\n", "\n") if _APNS_AUTH_KEY_RAW else ""
-# Use sandbox endpoint for AltStore/dev builds; production for TestFlight/App Store
-APNS_SANDBOX = os.environ.get("APNS_SANDBOX", "false").lower() == "true"
 
 
 async def send_push_to_all(title: str, body: str, tag: str = "ki-message") -> None:
@@ -106,12 +94,9 @@ async def send_to_user(text: str, title: str = "Ki") -> bool:
     except Exception as e:
         print(f"[notify] ✗ failed to save to desktop channel: {e}")
 
-    # 2. Push notifications (web + iOS)
+    # 2. Web push notifications
     try:
-        await asyncio.gather(
-            send_push_to_all(text.strip()[:120], ""),
-            send_apns_to_all(title, text.strip()[:120]),
-        )
+        await send_push_to_all(text.strip()[:120], "")
     except Exception as e:
         print(f"[notify] push notification failed (non-fatal): {e}")
 
@@ -132,60 +117,3 @@ async def send_to_user(text: str, title: str = "Ki") -> bool:
             print(f"[notify] WhatsApp send failed (non-fatal): {e}")
 
     return app_ok
-
-
-async def send_apns_to_all(title: str, body: str) -> None:
-    """Send an APNs push notification to all registered iOS devices.
-
-    Requires APNS_KEY_ID, APNS_TEAM_ID, APNS_BUNDLE_ID, APNS_AUTH_KEY env vars.
-    Set APNS_SANDBOX=true for AltStore/development builds.
-    No-op if any required var is missing.
-    """
-    if not all([APNS_KEY_ID, APNS_TEAM_ID, APNS_BUNDLE_ID, APNS_AUTH_KEY]):
-        return
-
-    from . import memory as mem
-    import jwt
-    import httpx
-
-    tokens = await mem.get_apns_tokens()
-    if not tokens:
-        return
-
-    jwt_token = jwt.encode(
-        {"iss": APNS_TEAM_ID, "iat": int(time.time())},
-        APNS_AUTH_KEY,
-        algorithm="ES256",
-        headers={"kid": APNS_KEY_ID},
-    )
-
-    host = "api.sandbox.push.apple.com" if APNS_SANDBOX else "api.push.apple.com"
-    payload = {"aps": {"alert": {"title": title, "body": body}, "badge": 1, "sound": "default"}}
-    stale: list[str] = []
-
-    async with httpx.AsyncClient(http2=True) as client:
-        for token in tokens:
-            try:
-                resp = await client.post(
-                    f"https://{host}/3/device/{token}",
-                    json=payload,
-                    headers={
-                        "authorization": f"bearer {jwt_token}",
-                        "apns-topic": APNS_BUNDLE_ID,
-                        "apns-push-type": "alert",
-                        "apns-priority": "10",
-                    },
-                    timeout=10.0,
-                )
-                if resp.status_code == 200:
-                    print(f"[push/apns] sent ok")
-                elif resp.status_code == 410:
-                    print(f"[push/apns] token expired, removing")
-                    stale.append(token)
-                else:
-                    print(f"[push/apns] send failed: {resp.status_code} {resp.text[:120]}")
-            except Exception as e:
-                print(f"[push/apns] error: {e}")
-
-    for token in stale:
-        await mem.delete_apns_token(token)

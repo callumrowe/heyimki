@@ -65,7 +65,7 @@ async def send_alert(message: str) -> None:
     try:
         from . import memory as mem  # noqa: PLC0415
         # Save to both channels so the alert is visible regardless of which
-        # interface Callum has open.
+        # interface the user has open.
         await asyncio.gather(
             mem.save_turn(user="", assistant=message, channel="whatsapp"),
             mem.save_turn(user="", assistant=message, channel="desktop"),

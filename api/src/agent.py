@@ -13,6 +13,7 @@ import httpx
 import openai as _openai
 
 from . import memory as mem
+from .config import CODING_AGENT_ENABLED, USER_LABEL, render as _render_prompt
 from .memory import minutes_since_last_message, save_user_message, get_recent_conversation_for_display
 from .actions import execute_pending_action, get_pending_action, resolve_pending_action, save_pending_action
 from .tools.browser import browser_act, navigate  # both return (result, screenshot_b64|None)
@@ -23,12 +24,15 @@ from .integrations.tts import generate_speech
 
 client = anthropic.AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"], max_retries=3)
 _openai_client = _openai.AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
-_USER_TZ = ZoneInfo(os.environ.get("USER_TZ", "Pacific/Auckland"))
+_USER_TZ = ZoneInfo((os.environ.get("USER_TZ") or "UTC"))
 
 MODEL = "claude-sonnet-4-6"
 SESSION_GAP_HOURS = float(os.environ.get("SESSION_GAP_HOURS", "0.5"))
 MIN_VAULT_SCORE = 0.35  # minimum cosine similarity to auto-inject a vault excerpt
 CODING_AGENT_URL = os.environ.get("CODING_AGENT_URL", "http://coding-agent:3002")
+# The coding agent rejects callers without INTERNAL_SECRET (it shares a network
+# with the headless browser, so it must not trust anything that can reach it).
+_CODING_AGENT_HEADERS = {"Authorization": f"Bearer {os.environ.get('INTERNAL_SECRET', '')}"}
 
 _REPLY_QUOTE_RE = re.compile(r'^> ([\s\S]*?)\n\n([\s\S]*)$')
 
@@ -76,7 +80,9 @@ async def _kill_all() -> None:
     """Set the kill event, signal external services, and cancel active tasks."""
     _kill_event.set()
     try:
-        async with httpx.AsyncClient(timeout=3) as c:
+        if not CODING_AGENT_ENABLED:
+            raise RuntimeError("coding agent not enabled")
+        async with httpx.AsyncClient(timeout=3, headers=_CODING_AGENT_HEADERS) as c:
             await c.post(f"{CODING_AGENT_URL}/kill")
     except Exception as e:
         print(f"[kill] coding-agent signal failed: {e}")
@@ -93,10 +99,36 @@ async def _kill_all() -> None:
     asyncio.create_task(_clear_kill_event(2))
 
 
+_VAULT_GIT_ALLOWED = {"log", "show", "ls-tree", "ls-files", "diff", "status", "cat-file",
+                      "rev-list", "branch", "tag", "rev-parse"}
+
+
+async def _vault_git_readonly(args: list[str]) -> str:
+    """Run an allow-listed, read-only git command against the vault."""
+    from .tools.obsidian import GIT_ENV, VAULT, vault_is_git
+    if not vault_is_git():
+        return "The vault is not a git repository, so there is no history to inspect."
+    if not args or args[0] not in _VAULT_GIT_ALLOWED:
+        return f"Subcommand not allowed. Allowed: {', '.join(sorted(_VAULT_GIT_ALLOWED))}"
+    if any(a.startswith("--output") for a in args):
+        return "Writing output files is not allowed."
+    proc = await asyncio.create_subprocess_exec(
+        "git", "-C", str(VAULT), *args,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=GIT_ENV,
+    )
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return "git command timed out after 30s"
+    text = (out or err).decode("utf-8", errors="replace").strip()
+    return text[:50000] or "(no output)"
+
+
 async def _run_deploy() -> str:
     """Trigger a full rebuild via the coding-agent /deploy endpoint."""
     try:
-        async with httpx.AsyncClient(timeout=30.0) as c:
+        async with httpx.AsyncClient(timeout=30.0, headers=_CODING_AGENT_HEADERS) as c:
             r = await c.post(f"{CODING_AGENT_URL}/deploy", json={})
             data = r.json()
     except Exception as e:
@@ -133,7 +165,6 @@ async def _create_with_retry(**kwargs):
             await asyncio.sleep(wait)
 
 
-CODING_AGENT_URL = os.environ.get("CODING_AGENT_URL", "http://coding-agent:3002")
 
 
 async def _git_cmd(*args: str) -> str:
@@ -188,14 +219,14 @@ _STATIC_TOOLS = [
             "Persist something worth remembering about the user for future conversations. "
             "Choose the right category:\n"
             "- preference: Subjective opinions, likes, dislikes, how the user prefers to work or communicate. "
-            "Examples: 'Callum prefers direct feedback without softening', 'Callum appreciates dry humor in responses'.\n"
+            "Examples: 'The user prefers direct feedback without softening', 'The user appreciates dry humor in responses'.\n"
             "- person: Information about specific people in the user's life — name, relationship, location, key facts. "
-            "Examples: '<name> is Callum\\'s best friend, lives in <city>', '<name> is Callum\\'s partner'.\n"
+            "Examples: '<name> is the user\\'s best friend, lives in <city>', '<name> is the user\\'s partner'.\n"
             "- fact: Everything else about the user — locations, dates, status, events, context. "
-            "Examples: 'Callum is waiting on a visa decision', 'Callum\\'s mobile is +64...'.\n"
-            "  This includes movement and logistics — where Callum currently is, where he's going, and when. "
-            "Examples: 'Callum is currently in <city>', 'Callum is travelling next week', "
-            "'Callum is back home as of mid-April'. "
+            "Examples: 'The user is waiting on a visa decision', 'The user\\'s mobile is +64...'.\n"
+            "  This includes movement and logistics — where the user currently is, where they're going, and when. "
+            "Examples: 'The user is currently in <city>', 'The user is travelling next week', "
+            "'The user is back home as of mid-April'. "
             "IMPORTANT: location/movement facts are transient — when saving one, check 'What you know about the user' "
             "for any existing location fact and use memory_update to replace it rather than saving a new one. "
             "Never let two contradictory location facts coexist.\n\n"
@@ -431,14 +462,14 @@ _STATIC_TOOLS = [
     {
         "name": "vault_git",
         "description": (
-            "Run a read-only git command against the Obsidian vault at /opt/vault. "
+            "Run a read-only git command against the Obsidian vault (only works if the vault is a git repo). "
             "Use this to inspect vault history, find deleted files, or recover file content from past commits. "
             "Examples:\n"
             "- Find a deleted file: vault_git(args=['log','--all','--full-history','--oneline','--','*partial-name*'])\n"
             "- List all paths ever matching a name: vault_git(args=['log','--all','--full-history','--name-only','--format=','--','*partial-name*'])\n"
             "- Recover file content: vault_git(args=['show','<commit>:<path/to/file.md>'])\n"
             "- List files at a commit: vault_git(args=['ls-tree','-r','--name-only','<commit>'])\n"
-            "Allowed subcommands: log, show, ls-tree, ls-files, diff, status, cat-file, rev-list, branch, tag, stash"
+            "Allowed subcommands: log, show, ls-tree, ls-files, diff, status, cat-file, rev-list, branch, tag, rev-parse"
         ),
         "input_schema": {
             "type": "object",
@@ -461,12 +492,12 @@ _STATIC_TOOLS = [
             "or anything else in the repo. "
             "The coding agent reads the codebase itself, diagnoses what needs changing, makes the changes, "
             "checks syntax, and commits. You do NOT need to figure out which files to touch or pre-analyse the code — "
-            "just relay what Callum asked for. The coding agent is better placed to do code diagnosis than you are. "
+            "just relay what the user asked for. The coding agent is better placed to do code diagnosis than you are. "
             "Recent conversation is automatically included so the coding agent has full context. "
             "After this completes, tell the user what was built/changed and any env vars to add, "
-            "then call deploy_changes to activate the changes (no need to ask the user to run ki deploy). "
+            "then call deploy_changes to activate the changes (no need to ask the user to rebuild anything). "
             "If the result contains FAILED or WARNING, tell the user exactly what went wrong — never report success if something failed. "
-            "If the result contains a 'git push to GitHub failed' note, tell the user the files are written and live on the VPS but didn't push to GitHub — they should run ki deploy to sync."
+            "If the result contains a 'git push failed' note, tell the user the files are written and committed locally but the push to the git remote failed — they can push by hand with git push."
         ),
         "input_schema": {
             "type": "object",
@@ -474,8 +505,8 @@ _STATIC_TOOLS = [
                 "task": {
                     "type": "string",
                     "description": (
-                        "What Callum asked for, in as close to his original words as possible. "
-                        "Include any constraints or preferences he mentioned. "
+                        "What the user asked for, in as close to their original words as possible. "
+                        "Include any constraints or preferences they mentioned. "
                         "Do NOT pre-analyse the codebase or list specific files — the coding agent will do that itself."
                     ),
                 },
@@ -488,7 +519,7 @@ _STATIC_TOOLS = [
         "description": (
             "Fetch recent Docker logs for a Ki service. "
             "Use to diagnose crashes, errors, or unexpected behaviour. "
-            "Services: api, baileys, coding-agent, postgres, qdrant, phoenix, browser, vault-sync."
+            "Services: api, baileys, coding-agent, postgres, qdrant, phoenix, browser."
         ),
         "input_schema": {
             "type": "object",
@@ -567,6 +598,12 @@ _STATIC_TOOLS = [
         },
     },
 ]
+
+# Self-modification tools are only offered when the coding-agent profile is on.
+# get_service_logs needs the Docker socket, which is only mounted in that mode.
+_CODING_AGENT_TOOLS = {"delegate_coding_task", "deploy_changes", "get_service_logs"}
+if not CODING_AGENT_ENABLED:
+    _STATIC_TOOLS = [t for t in _STATIC_TOOLS if t["name"] not in _CODING_AGENT_TOOLS]
 
 # Integration tools appended after static tools
 _integration_tool_schemas = [s for mod in _INTEGRATIONS for s in mod.TOOL_SCHEMAS]
@@ -714,12 +751,9 @@ async def _run_tool(name: str, inputs: dict, channel: str = "whatsapp") -> str:
             return result
 
         elif name == "vault_git":
-            print(f"[tool] vault_git: {inputs.get('args', [])}")
-            async with httpx.AsyncClient(timeout=30.0) as c:
-                r = await c.post(f"{CODING_AGENT_URL}/vault-git", json={"args": inputs.get("args", [])})
-                r.raise_for_status()
-                data = r.json()
-            return data.get("output", "(no output)")
+            args = [str(a) for a in inputs.get("args", [])]
+            print(f"[tool] vault_git: {args}")
+            return await _vault_git_readonly(args)
 
         elif name == "run_curl":
             print(f"[tool] run_curl: {inputs['command'][:120]!r}")
@@ -739,9 +773,9 @@ async def _run_tool(name: str, inputs: dict, channel: str = "whatsapp") -> str:
                         if isinstance(b, dict) and b.get("type") == "text"
                     ).strip()
                 if role and content:
-                    label = "Callum" if role == "user" else "Ki"
+                    label = USER_LABEL if role == "user" else "Ki"
                     conversation_context.append(f"{label}: {content}")
-            async with httpx.AsyncClient(timeout=600.0) as c:
+            async with httpx.AsyncClient(timeout=600.0, headers=_CODING_AGENT_HEADERS) as c:
                 r = await c.post(f"{CODING_AGENT_URL}/code", json={
                     "task": inputs["task"],
                     "conversation_context": conversation_context,
@@ -779,14 +813,14 @@ async def _run_tool(name: str, inputs: dict, channel: str = "whatsapp") -> str:
                 if not push_actually_failed:
                     print("[git-verify] coding agent reported push failure but commits match — ignoring false negative")
                 if push_actually_failed:
-                    parts.append("Note: git push to GitHub failed — files are written and live on the VPS, but run `ki deploy` from your machine to sync to GitHub.")
+                    parts.append("Note: git push failed — files are written and committed locally, but push them to your git remote by hand with git push.")
             return "\n".join(parts)
 
         elif name == "get_service_logs":
             service = inputs.get("service", "api")
             lines = inputs.get("lines", 100)
             print(f"[tool] get_service_logs: {service} ({lines} lines)")
-            async with httpx.AsyncClient(timeout=20.0) as c:
+            async with httpx.AsyncClient(timeout=20.0, headers=_CODING_AGENT_HEADERS) as c:
                 r = await c.post(f"{CODING_AGENT_URL}/logs", json={"service": service, "lines": lines})
                 data = r.json()
             return data.get("output", "(no output)")
@@ -825,12 +859,12 @@ async def _run_tool(name: str, inputs: dict, channel: str = "whatsapp") -> str:
             )
 
             if needs_rebuild:
-                async with httpx.AsyncClient(timeout=30.0) as c:
+                async with httpx.AsyncClient(timeout=30.0, headers=_CODING_AGENT_HEADERS) as c:
                     r = await c.post(f"{CODING_AGENT_URL}/deploy", json={})
                     data = r.json()
                 return data.get("message", "Full rebuild started. Ki will be back in ~60-90 seconds.")
             elif needs_restart:
-                async with httpx.AsyncClient(timeout=30.0) as c:
+                async with httpx.AsyncClient(timeout=30.0, headers=_CODING_AGENT_HEADERS) as c:
                     r = await c.post(f"{CODING_AGENT_URL}/restart", json={})
                     data = r.json()
                 return data.get("message", "Restarting api and coding-agent. Ready in ~10 seconds.")
@@ -839,7 +873,7 @@ async def _run_tool(name: str, inputs: dict, channel: str = "whatsapp") -> str:
             else:
                 # Unknown file pattern — restart to be safe rather than silently skip
                 print(f"[tool] deploy_changes: unknown file pattern, defaulting to restart")
-                async with httpx.AsyncClient(timeout=30.0) as c:
+                async with httpx.AsyncClient(timeout=30.0, headers=_CODING_AGENT_HEADERS) as c:
                     r = await c.post(f"{CODING_AGENT_URL}/restart", json={})
                     data = r.json()
                 return data.get("message", "Restarting api and coding-agent. Ready in ~10 seconds.")
@@ -900,9 +934,9 @@ async def _load_prompt(filename: str) -> str:
     name = filename.removesuffix(".md")
     db_value = await mem.get_prompt(name)
     if db_value is not None:
-        return db_value
+        return _render_prompt(db_value)
     path = Path(__file__).parent.parent / "prompts" / filename
-    return path.read_text(encoding="utf-8").strip()
+    return _render_prompt(path.read_text(encoding="utf-8").strip())
 
 
 def _mark_last_cacheable(messages: list[dict]) -> list[dict]:
@@ -997,7 +1031,7 @@ async def _build_system(
     _STOPWORDS = {"that", "this", "with", "have", "from", "they", "will", "been", "were",
                   "what", "when", "your", "just", "also", "some", "more", "about", "there",
                   "which", "their", "then", "than", "into", "would", "could", "should",
-                  "callum", "okay", "right", "going", "think", "know", "make", "need"}
+                  "okay", "right", "going", "think", "know", "make", "need"}
     _session_terms: set[str] = set()
     if session_messages:
         for msg in session_messages[-20:]:
@@ -1133,7 +1167,7 @@ async def _build_system(
         channels = sorted(set(m["channel"] for m in cross_channel_context))
         lines = []
         for m in cross_channel_context:
-            speaker = "You" if m["role"] == "assistant" else "Callum"
+            speaker = "You" if m["role"] == "assistant" else USER_LABEL
             lines.append(f"[{m['channel']}] {speaker}: {m['content'][:300]}")
         dynamic += (
             f"\n\n## Recent {'/'.join(channels)} context (session gap — not current conversation)\n"
@@ -1145,6 +1179,10 @@ async def _build_system(
 
     identity, instructions = await asyncio.gather(_load_prompt("identity.md"), _load_prompt("instructions.md"))
     static_system = identity + "\n\n---\n\n" + instructions
+    if CODING_AGENT_ENABLED:
+        static_system += "\n\n" + _render_prompt(
+            (Path(__file__).parent.parent / "prompts" / "coding_agent.md").read_text(encoding="utf-8").strip()
+        )
     return [
         {"type": "text", "text": static_system, "cache_control": {"type": "ephemeral"}},
         {"type": "text", "text": dynamic, "cache_control": {"type": "ephemeral"}},

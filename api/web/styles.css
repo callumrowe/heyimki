@@ -29,9 +29,6 @@
   --radius-sm: 8px;
   --font: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
   --bg-chrome: rgba(13, 13, 13, 0.72);
-  /* Electron background opacity — controlled via CSS variable so individual
-     elements can remain fully opaque while only the chat backdrop fades */
-  --bg-opacity: 0.62;
 }
 
 @media (prefers-color-scheme: light) {
@@ -60,78 +57,9 @@ html {
   height: 100%;
 }
 
-/* Electron: fully transparent body — window transparency is controlled via
-   --bg-opacity CSS variable on .messages directly. This lets bubbles,
-   titlebar, and input remain fully opaque regardless of the opacity slider. */
-body.electron {
-  background: transparent !important;
-}
-
-/* ── Electron: frosted-glass messages background ──────────────────────────── */
-/* Apply the tinted background directly on .messages using --bg-opacity so the  */
-/* opacity slider only affects this layer — bubbles, titlebar, and input remain  */
-/* fully opaque at all times. backdrop-filter provides the frosted glass effect. */
-body.electron .messages {
-  background: rgba(15, 15, 15, var(--bg-opacity)) !important;
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-}
-
-/* Light mode Electron: messages uses the light palette tint */
-@media (prefers-color-scheme: light) {
-  body.electron .messages {
-    background: rgba(242, 242, 247, var(--bg-opacity)) !important;
-  }
-}
-
-/* Electron: all UI elements use fully solid/opaque backgrounds.
-   Only .messages uses --bg-opacity; everything else stays crisp
-   regardless of the user's opacity slider value. */
-
 /* Cards, panels, and chrome — fully opaque dark colours */
-body.electron .admin-card {
-  background: #1a1a1a;
-}
-body.electron .admin-panel {
-  background: transparent;
-}
-body.electron #admin-screen {
-  background: rgba(13, 13, 13, 0.96);
-}
-body.electron #media-screen {
-  background: rgba(13, 13, 13, 0.96);
-}
-
-@media (prefers-color-scheme: light) {
-  body.electron .admin-card {
-    background: #ffffff;
-  }
-  body.electron #admin-screen {
-    background: rgba(238, 238, 243, 0.96);
-  }
-  body.electron #media-screen {
-    background: rgba(238, 238, 243, 0.96);
-  }
-}
 
 /* Inline content elements — fully opaque */
-body.electron .agent-card,
-body.electron .usage-period-card,
-body.electron .reply-bar,
-body.electron .queue-item,
-body.electron .attachment-bar {
-  background: #1a1a1a;
-}
-
-@media (prefers-color-scheme: light) {
-  body.electron .agent-card,
-  body.electron .usage-period-card,
-  body.electron .reply-bar,
-  body.electron .queue-item,
-  body.electron .attachment-bar {
-    background: #ffffff;
-  }
-}
 
 /* Bubbles use their existing fully-opaque hex CSS variables — no override needed */
 
@@ -294,19 +222,6 @@ body {
 
 .titlebar-drag {
   display: none;
-}
-
-/* Electron: make the titlebar draggable, but not the buttons */
-body.electron #main-titlebar {
-  -webkit-app-region: drag;
-}
-body.electron #main-titlebar button {
-  -webkit-app-region: no-drag;
-}
-
-/* Electron on macOS: push all header content past the traffic light buttons (~80px) */
-body.electron .header-content {
-  padding-left: 80px;
 }
 
 .header-content {
@@ -504,7 +419,7 @@ body.electron .header-content {
 /* isolation:isolate creates a new stacking context so bubble z-index layering  */
 /* is contained within .messages. Bubble backgrounds (--ki-bubble,             */
 /* --user-bubble) use fully opaque hex values and are unaffected by the        */
-/* backdrop-filter frost applied in the Electron variant below.                */
+
 .messages {
   position: absolute;
   inset: 0;
@@ -3407,53 +3322,6 @@ textarea#message-input::placeholder {
   }
 }
 
-/* ── Electron: floating titlebar — transparent bar, pill-shaped elements ──── */
-/* Only applied in Electron so mobile/web appearance is unaffected.            */
-body.electron #main-titlebar {
-  background: transparent !important;
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
-  border-bottom: none !important;
-  box-shadow: none !important;
-}
-
-body.electron .ki-name {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  padding: 3px 10px;
-  font-size: 14px;
-}
-
-body.electron #main-titlebar .media-btn,
-body.electron #main-titlebar .admin-btn {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  padding: 4px 10px;
-}
-
-body.electron #main-titlebar .media-btn:hover,
-body.electron #main-titlebar .admin-btn:hover {
-  background: var(--bg-hover);
-}
-
-body.electron #main-titlebar .voice-btn {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  padding: 5px 8px;
-}
-
-body.electron #main-titlebar .voice-btn:hover {
-  background: var(--bg-hover);
-}
-
-body.electron #main-titlebar .voice-btn.active {
-  background: rgba(59, 130, 246, 0.15);
-  border-color: var(--accent);
-}
-
 /* ── Tool logs side panel ─────────────────────────────────────────────────── */
 .logs-panel-backdrop {
   position: fixed;
@@ -3607,11 +3475,3 @@ body.electron #main-titlebar .voice-btn.active {
 }
 
 /* .status-indicator removed — connection state shown via full-page overlay */
-
-/* ── Electron: floating input area — transparent wrapper, pill floats free ── */
-body.electron .input-area {
-  background: transparent !important;
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
-  border-top: none !important;
-}

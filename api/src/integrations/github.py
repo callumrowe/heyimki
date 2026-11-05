@@ -7,7 +7,7 @@ Exposes two conversation tools:
 
 Requires:
   GITHUB_TOKEN — personal access token with repo read access
-  GITHUB_REPO  — owner/repo format, e.g. "callumio/ki"
+  GITHUB_REPO  — owner/repo format, e.g. "your-username/ki"
 """
 import base64
 import os

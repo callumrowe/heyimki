@@ -333,18 +333,44 @@ def _chunks_for_file(path: Path) -> list[dict]:
 # Git helpers
 # ---------------------------------------------------------------------------
 
+# A vault that isn't a git repo is tracked by a filesystem fingerprint instead
+# of a commit hash: "fs:<newest mtime_ns>:<file count>". Changed files are then
+# the ones modified after the newest mtime seen by the previous run.
+_FS_PREFIX = "fs:"
+
+
+def _fs_fingerprint() -> str | None:
+    files = list(VAULT_PATH.rglob("*.md"))
+    if not files:
+        return None
+    newest = max(f.stat().st_mtime_ns for f in files)
+    return f"{_FS_PREFIX}{newest}:{len(files)}"
+
+
 def _current_vault_commit() -> str | None:
+    if (VAULT_PATH / ".git").exists():
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(VAULT_PATH), "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except Exception:
+            pass
     try:
-        result = subprocess.run(
-            ["git", "-C", str(VAULT_PATH), "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=10,
-        )
-        return result.stdout.strip() if result.returncode == 0 else None
+        return _fs_fingerprint()
     except Exception:
         return None
 
 
 def _changed_files(since_commit: str) -> list[Path]:
+    if since_commit.startswith(_FS_PREFIX):
+        try:
+            since_ns = int(since_commit[len(_FS_PREFIX):].split(":")[0])
+        except ValueError:
+            return list(VAULT_PATH.rglob("*.md"))
+        return [p for p in VAULT_PATH.rglob("*.md") if p.stat().st_mtime_ns > since_ns]
     try:
         result = subprocess.run(
             ["git", "-C", str(VAULT_PATH), "diff", "--name-only", since_commit, "HEAD"],
@@ -444,7 +470,7 @@ async def reindex() -> None:
 
     current = await asyncio.to_thread(_current_vault_commit)
     if not current:
-        print(f"Indexer: could not read git HEAD from {VAULT_PATH} — skipping")
+        print(f"Indexer: no notes found in {VAULT_PATH} — skipping")
         return
 
     last = await _get_indexed_commit()

@@ -4,8 +4,13 @@
 !.env.example
 *.env
 !*.env.example
+secrets/*
+!secrets/README.md
 
-# Local host config for the ki CLI
+# Your Obsidian vault, if you keep it inside this folder (the default)
+/vault/
+
+# Remote host for bin/ki
 .ki-host
 
 # Runtime data
@@ -27,16 +32,14 @@ __pycache__/
 venv/
 .pytest_cache/
 
-# Capacitor / iOS
-ios/
-ios/App/Pods/
-ios/App/build/
-android/
-
 # Build output
 dist/
 build/
 out/
+
+# Leftovers from the old native app wrappers
+ios/
+android/
 
 # Editor / OS
 .DS_Store

@@ -425,36 +425,6 @@ async def delete_push_subscriptions(endpoints: list[str]) -> None:
             )
 
 
-async def get_apns_tokens() -> list[str]:
-    async with SessionLocal() as session:
-        result = await session.execute(
-            sa.text("SELECT token FROM apns_tokens ORDER BY id")
-        )
-        return [r.token for r in result.fetchall()]
-
-
-async def save_apns_token(token: str) -> None:
-    async with SessionLocal() as session:
-        async with session.begin():
-            await session.execute(
-                sa.text("""
-                    INSERT INTO apns_tokens (token, updated_at)
-                    VALUES (:token, NOW())
-                    ON CONFLICT (token) DO UPDATE SET updated_at = NOW()
-                """),
-                {"token": token},
-            )
-
-
-async def delete_apns_token(token: str) -> None:
-    async with SessionLocal() as session:
-        async with session.begin():
-            await session.execute(
-                sa.text("DELETE FROM apns_tokens WHERE token = :token"),
-                {"token": token},
-            )
-
-
 async def get_tool_rules() -> list[dict]:
     """Return tool-selection rules learned from 👎 corrections, most recent first."""
     async with SessionLocal() as session:

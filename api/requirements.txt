@@ -10,7 +10,7 @@ apscheduler>=3.10.0,<4
 httpx[http2]>=0.27.0
 PyJWT[crypto]>=2.8.0
 playwright>=1.40.0
-browser-use>=0.12.0
+browser-use==0.13.14  # pinned: open ranges make pip give up backtracking against openai
 langchain-anthropic>=0.3.0  # explicit dep; browser-use pulls this transitively but we pin it
 # Pin OTEL to a range compatible with arize-phoenix-otel.
 # browser-use pulls in 1.40.x which breaks the Phoenix exporter.
@@ -18,7 +18,7 @@ opentelemetry-api>=1.20.0,<1.35.0
 opentelemetry-sdk>=1.20.0,<1.35.0
 opentelemetry-exporter-otlp-proto-http>=1.20.0,<1.35.0
 arize-phoenix-otel>=0.7.0
-openinference-instrumentation-anthropic>=0.1.0,<1.0.0
+openinference-instrumentation-anthropic>=3.0.0,<4  # 0.x breaks on anthropic>=1.x (no resources.completions)
 rapidfuzz>=3.0.0
 pywebpush>=2.0.0
 pyotp>=2.9.0

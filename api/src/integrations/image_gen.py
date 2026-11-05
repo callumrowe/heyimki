@@ -48,16 +48,22 @@ _ALLOWED_JID = os.environ.get("ALLOWED_JID", "")
 
 _MODEL_DEFAULT = "grok-imagine-image"
 
-_xai_client = openai.AsyncOpenAI(
-    api_key=os.environ.get("XAI_API_KEY", ""),
-    base_url="https://api.x.ai/v1",
-)
+_xai_client: openai.AsyncOpenAI | None = None
+
+
+def _client() -> openai.AsyncOpenAI:
+    # Created lazily: the openai SDK raises at construction when the key is
+    # empty, and the loader imports this module before checking XAI_API_KEY.
+    global _xai_client
+    if _xai_client is None:
+        _xai_client = openai.AsyncOpenAI(api_key=os.environ.get("XAI_API_KEY", ""), base_url="https://api.x.ai/v1")
+    return _xai_client
 
 
 async def _generate_image_bytes(prompt: str) -> tuple[bytes, str]:
     """Call xAI images.generate and return (raw image bytes, model used)."""
     model = await get_setting("image_gen_model", _MODEL_DEFAULT)
-    response = await _xai_client.images.generate(
+    response = await _client().images.generate(
         model=model,
         prompt=prompt,
         n=1,

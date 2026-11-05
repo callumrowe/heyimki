@@ -1,12 +1,5 @@
-// ── Environment detection ─────────────────────────────────────────────────────
-// Electron's contextBridge sets window.ki before this script runs.
-// In the web PWA window.ki is undefined — polyfill with localStorage.
-const IS_ELECTRON = window.location.protocol === 'file:'
-if (IS_ELECTRON) document.body.classList.add('electron')
-// Capacitor native iOS app — window.Capacitor is injected by the native bridge
-const IS_CAPACITOR = !!(window.Capacitor?.isNativePlatform?.())
-if (IS_CAPACITOR) document.body.classList.add('capacitor')
-
+// ── Config storage ────────────────────────────────────────────────────────────
+// The PWA keeps its connection config (just the DESKTOP_SECRET) in localStorage.
 if (!window.ki) {
   window.ki = {
     loadConfig: () => {
@@ -135,12 +128,7 @@ const TOOL_LOG_SERVICE = {
 window.addEventListener('DOMContentLoaded', async () => {
   initLightbox()
   initLogsPanel()
-  if (IS_ELECTRON || IS_CAPACITOR) {
-    document.getElementById('host-field-group').style.display = ''
-    document.getElementById('setup-subtitle').textContent = 'Connect to your Ki instance'
-  } else {
-    document.getElementById('setup-subtitle').textContent = 'Enter your desktop secret'
-  }
+  document.getElementById('setup-subtitle').textContent = 'Enter your DESKTOP_SECRET'
   config = await window.ki.loadConfig()
   if (config && config.secret) {
     showChat()
@@ -166,7 +154,6 @@ function closeAllActions() {
 }
 
 function attachDoubleTap(row) {
-  if (IS_ELECTRON) return
   let lastTap = 0
 
   row.addEventListener('contextmenu', e => e.preventDefault())
@@ -203,16 +190,14 @@ document.addEventListener('touchstart', e => {
 function showSetup() {
   document.getElementById('setup-screen').classList.remove('hidden')
   document.getElementById('chat-screen').classList.add('hidden')
-  document.getElementById((IS_ELECTRON || IS_CAPACITOR) ? 'setup-host' : 'setup-secret').focus()
+  document.getElementById('setup-secret').focus()
 }
 
 document.getElementById('setup-connect').addEventListener('click', async () => {
-  const host   = (IS_ELECTRON || IS_CAPACITOR) ? document.getElementById('setup-host').value.trim() : null
   const secret = document.getElementById('setup-secret').value.trim()
   const errEl  = document.getElementById('setup-error')
   const btn    = document.getElementById('setup-connect')
 
-  if ((IS_ELECTRON || IS_CAPACITOR) && !host) { showSetupError('Both fields are required.'); return }
   if (!secret)               { showSetupError('Secret is required.');       return }
 
   btn.disabled = true
@@ -220,14 +205,13 @@ document.getElementById('setup-connect').addEventListener('click', async () => {
   errEl.classList.add('hidden')
 
   try {
-    const base = (IS_ELECTRON || IS_CAPACITOR) ? (/^[\d.]+$/.test(host) ? `http://${host}:8000` : `https://${host}`) : ''
-    const check = await fetch(`${base}/desktop/history?channel=desktop&limit=1`, {
+    const check = await fetch(`/desktop/history?channel=desktop&limit=1`, {
       headers: { 'Authorization': `Bearer ${secret}` }
     })
     if (check.status === 401) throw new Error('Wrong secret — check DESKTOP_SECRET.')
     if (!check.ok) throw new Error(`Server error ${check.status}`)
 
-    config = (IS_ELECTRON || IS_CAPACITOR) ? { host, secret } : { secret }
+    config = { secret }
     await window.ki.saveConfig(config)
     showChat()
   } catch (err) {
@@ -237,9 +221,6 @@ document.getElementById('setup-connect').addEventListener('click', async () => {
   }
 })
 
-document.getElementById('setup-host').addEventListener('keydown', e => {
-  if (e.key === 'Enter') document.getElementById('setup-connect').click()
-})
 document.getElementById('setup-secret').addEventListener('keydown', e => {
   if (e.key === 'Enter') document.getElementById('setup-connect').click()
 })
@@ -319,12 +300,8 @@ async function showChat() {
   setConnection('online')
   await checkAndResumeTask()
   document.getElementById('message-input').focus()
-  // Background: refresh push subscription (web push) or APNs token (Capacitor)
-  if (IS_CAPACITOR) {
-    _autoRegisterCapacitorPush()
-  } else {
-    _checkAndRefreshVapidSubscription()
-  }
+  // Background: refresh the web push subscription
+  _checkAndRefreshVapidSubscription()
 }
 
 // ── Hotkeys (Cmd+X = admin) ───────────────────────────────────────────────────
@@ -1873,10 +1850,7 @@ document.getElementById('reply-cancel').addEventListener('click', clearReply)
 
 // ── API fetch helper ──────────────────────────────────────────────────────────
 function apiFetch(path, options = {}) {
-  const isRawIP = /^[\d.]+$/.test(config?.host)
-  const url = ((IS_ELECTRON || IS_CAPACITOR) && config?.host)
-    ? (isRawIP ? `http://${config.host}:8000${path}` : `https://${config.host}${path}`)
-    : path
+  const url = path
   const headers = {
     'Authorization': `Bearer ${config.secret}`,
     ...(options.headers || {}),
@@ -1939,7 +1913,6 @@ function hideMedia() {
   document.getElementById('media-screen').classList.add('hidden')
   document.getElementById('chat-screen').classList.remove('hidden')
   document.getElementById('main-titlebar').classList.remove('hidden')
-  if (IS_ELECTRON) document.getElementById('message-input').focus()
 }
 
 async function loadMedia() {
@@ -2016,7 +1989,6 @@ function returnToChat() {
   document.getElementById('admin-screen').classList.add('hidden')
   document.getElementById('chat-screen').classList.remove('hidden')
   document.getElementById('main-titlebar').classList.remove('hidden')
-  if (IS_ELECTRON) document.getElementById('message-input').focus()
 }
 
 document.querySelectorAll('.admin-tab').forEach(btn => {
@@ -2052,7 +2024,7 @@ async function loadAdminState() {
   el.innerHTML = '<div class="admin-loading">Loading…</div>'
   try {
     const res = await apiFetch('/admin/states')
-    if (!res.ok) throw new Error(`HTTP ${res.status} — have you run ki deploy?`)
+    if (!res.ok) throw new Error(`HTTP ${res.status} — try rebuilding the api container`)
     const { states } = await res.json()
     adminStateHistory = states
     adminStateIndex = 0
@@ -2280,7 +2252,7 @@ async function loadAdminMemories() {
   el.innerHTML = '<div class="admin-loading">Loading…</div>'
   try {
     const res = await apiFetch('/admin/memories')
-    if (!res.ok) throw new Error(`HTTP ${res.status} — have you run ki deploy?`)
+    if (!res.ok) throw new Error(`HTTP ${res.status} — try rebuilding the api container`)
     const { memories } = await res.json()
     renderAdminMemories(el, memories)
   } catch (err) {
@@ -2681,8 +2653,8 @@ async function loadAdminSystem() {
       apiFetch('/admin/session'),
       apiFetch('/auth/google/status'),
     ])
-    if (!vaultRes.ok)  throw new Error(`HTTP ${vaultRes.status} — have you run ki deploy?`)
-    if (!runsRes.ok)   throw new Error(`HTTP ${runsRes.status} — have you run ki deploy?`)
+    if (!vaultRes.ok)  throw new Error(`HTTP ${vaultRes.status} — try rebuilding the api container`)
+    if (!runsRes.ok)   throw new Error(`HTTP ${runsRes.status} — try rebuilding the api container`)
     const { integrations } = await intRes.json()
     const vault = await vaultRes.json()
     const { runs, jobs } = await runsRes.json()
@@ -2717,20 +2689,6 @@ async function loadAdminSystem() {
 
 function renderAdminSystem(el, integrations, vault, runs, jobs, imageGenModel, identityContent, instructionsContent, heartbeatPromptContent, sessionInfo, googleStatus) {
   let html = ''
-
-  // ── 1. Deploy ──
-  {
-    const hasLocalDeploy = !!window.ki?.runDeploy
-    const label = hasLocalDeploy ? '⚙ Run ki deploy' : '⚙ Deploy (full rebuild)'
-    html += `<div class="admin-card" id="deploy-card">
-      <div class="admin-card-label">Deploy</div>
-      <div class="admin-kv" style="margin-bottom:8px">
-        <span class="admin-kv-key" style="flex:1">Rebuild all services and redeploy to the server</span>
-      </div>
-      <button id="deploy-btn" class="admin-action-btn">${label}</button>
-      <pre id="deploy-output" class="deploy-output hidden"></pre>
-    </div>`
-  }
 
   // ── Reload Ki App ──
   html += `<div class="admin-card" id="reload-card">
@@ -2822,13 +2780,8 @@ function renderAdminSystem(el, integrations, vault, runs, jobs, imageGenModel, i
 
   // ── 7. Device permissions ──
   {
-    // Capacitor: check local registration flag instead of Notification.permission
-    const notifSupported = IS_CAPACITOR
-      ? !!(window.Capacitor?.Plugins?.PushNotifications)
-      : ('Notification' in window)
-    const notifPerm = IS_CAPACITOR
-      ? (localStorage.getItem('ki-apns-registered') ? 'granted' : (notifSupported ? 'default' : 'unsupported'))
-      : (notifSupported ? Notification.permission : 'unsupported')
+    const notifSupported = ('Notification' in window)
+    const notifPerm = notifSupported ? Notification.permission : 'unsupported'
     let notifStatusText = '—'
     let notifStatusColor = ''
     let notifBtnLabel = 'Enable Notifications'
@@ -2839,7 +2792,7 @@ function renderAdminSystem(el, integrations, vault, runs, jobs, imageGenModel, i
       notifBtnLabel = 'Not supported'
       notifBtnDisabled = true
     } else if (notifPerm === 'granted') {
-      notifStatusText = IS_CAPACITOR ? '✓ APNs registered' : '✓ Enabled'
+      notifStatusText = '✓ Enabled'
       notifStatusColor = 'color:var(--success,#27ae60)'
       notifBtnLabel = 'Notifications enabled ✓'
       notifBtnDisabled = true
@@ -2847,7 +2800,7 @@ function renderAdminSystem(el, integrations, vault, runs, jobs, imageGenModel, i
     } else if (notifPerm === 'denied') {
       notifStatusText = 'Blocked'
       notifStatusColor = 'color:var(--danger,#c0392b)'
-      notifBtnLabel = IS_CAPACITOR ? 'Blocked — enable in iOS Settings' : 'Blocked — enable in browser settings'
+      notifBtnLabel = 'Blocked — enable in browser settings'
       notifBtnDisabled = true
     }
     html += `<div class="admin-card" id="permissions-card">
@@ -2862,16 +2815,6 @@ function renderAdminSystem(el, integrations, vault, runs, jobs, imageGenModel, i
     </div>`
   }
 
-  // ── 8. Window opacity (Electron only) ──
-  if (typeof IS_ELECTRON !== 'undefined' && IS_ELECTRON) {
-    html += `<div class="admin-card" id="opacity-card">
-      <div class="admin-card-label">Window opacity</div>
-      <div class="admin-kv" style="gap:12px;align-items:center">
-        <input type="range" id="opacity-slider" min="0.2" max="1" step="0.01" style="flex:1;accent-color:var(--accent)" />
-        <span id="opacity-label" class="admin-kv-val" style="min-width:36px;text-align:right"></span>
-      </div>
-    </div>`
-  }
 
   // ── 8. Image generation ──
   html += `<div class="admin-card">
@@ -2932,14 +2875,7 @@ function renderAdminSystem(el, integrations, vault, runs, jobs, imageGenModel, i
   const googleConnectBtn = el.querySelector('#google-connect-btn')
   if (googleConnectBtn) {
     googleConnectBtn.addEventListener('click', () => {
-      const authUrl = IS_ELECTRON
-        ? 'https://ki.example.com/auth/google'
-        : '/auth/google'
-      if (IS_ELECTRON && window.ki?.openExternal) {
-        window.ki.openExternal(authUrl)
-      } else {
-        window.location.href = authUrl
-      }
+      window.location.href = '/auth/google'
     })
   }
 
@@ -2957,43 +2893,6 @@ function renderAdminSystem(el, integrations, vault, runs, jobs, imageGenModel, i
         googleDisconnectBtn.disabled = false
         googleDisconnectBtn.textContent = 'Disconnect'
         alert(`Failed to disconnect Google: ${err.message}`)
-      }
-    })
-  }
-
-  // Wire up deploy button — Electron uses local ki deploy; PWA calls /admin/deploy
-  const deployBtn = el.querySelector('#deploy-btn')
-  if (deployBtn) {
-    deployBtn.addEventListener('click', async () => {
-      const outputEl = el.querySelector('#deploy-output')
-      outputEl.textContent = ''
-      outputEl.classList.remove('hidden')
-      deployBtn.disabled = true
-      deployBtn.textContent = '⚙ Deploying…'
-
-      if (window.ki?.runDeploy) {
-        // Electron: stream output from local ki deploy
-        window.ki.runDeploy(
-          (text) => { outputEl.textContent += text; outputEl.scrollTop = outputEl.scrollHeight },
-          (code) => {
-            deployBtn.disabled = false
-            deployBtn.textContent = code === 0 ? '⚙ Run ki deploy' : '⚙ Deploy (failed — see output)'
-            deployBtn.style.setProperty('--btn-color', code === 0 ? '' : 'var(--danger, #c0392b)')
-          }
-        )
-      } else {
-        // PWA: fire-and-forget via /admin/deploy
-        try {
-          const r = await apiFetch('/admin/deploy', { method: 'POST' })
-          const data = await r.json()
-          outputEl.textContent = data.message || JSON.stringify(data)
-          deployBtn.textContent = '⚙ Deploy (full rebuild)'
-        } catch (err) {
-          outputEl.textContent = `Error: ${err.message}`
-          deployBtn.textContent = '⚙ Deploy (full rebuild)'
-          deployBtn.style.setProperty('--btn-color', 'var(--danger, #c0392b)')
-        }
-        deployBtn.disabled = false
       }
     })
   }
@@ -3031,7 +2930,6 @@ function renderAdminSystem(el, integrations, vault, runs, jobs, imageGenModel, i
     if (confirm('Reset connection settings? You will need to reconnect.')) {
       config = null
       window.ki.saveConfig(null)
-      if (IS_ELECTRON || IS_CAPACITOR) document.getElementById('setup-host').value = ''
       document.getElementById('setup-secret').value = ''
       document.getElementById('admin-screen').classList.add('hidden')
       showSetup()
@@ -3049,10 +2947,6 @@ function renderAdminSystem(el, integrations, vault, runs, jobs, imageGenModel, i
       if (enableNotifBtn.disabled) return
       enableNotifBtn.disabled = true
       notifStatusEl.textContent = 'Requesting permission…'
-      if (IS_CAPACITOR) {
-        await _registerCapacitorPush(notifStatusEl, notifStatusValEl, enableNotifBtn, disableNotifBtn)
-        return
-      }
       try {
         const perm = await Notification.requestPermission()
         if (perm !== 'granted') {
@@ -3097,32 +2991,6 @@ function renderAdminSystem(el, integrations, vault, runs, jobs, imageGenModel, i
     disableNotifBtn.addEventListener('click', async () => {
       disableNotifBtn.disabled = true
       notifStatusEl.textContent = 'Unsubscribing…'
-      if (IS_CAPACITOR) {
-        try {
-          const token = localStorage.getItem('ki-apns-token')
-          if (token) {
-            await apiFetch('/push/apns-token/delete', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ token }),
-            })
-          }
-          localStorage.removeItem('ki-apns-registered')
-          localStorage.removeItem('ki-apns-token')
-          notifStatusValEl.textContent = 'Disabled'
-          notifStatusValEl.style.color = ''
-          disableNotifBtn.style.display = 'none'
-          enableNotifBtn.textContent = 'Enable Notifications'
-          enableNotifBtn.disabled = false
-          enableNotifBtn.style.display = ''
-          notifStatusEl.textContent = 'Notifications disabled'
-          setTimeout(() => { notifStatusEl.textContent = '' }, 3000)
-        } catch (err) {
-          notifStatusEl.textContent = `Error: ${err.message}`
-          disableNotifBtn.disabled = false
-        }
-        return
-      }
       try {
         const swReg = await navigator.serviceWorker.ready
         const sub = await swReg.pushManager.getSubscription()
@@ -3150,7 +3018,7 @@ function renderAdminSystem(el, integrations, vault, runs, jobs, imageGenModel, i
   }
 
   // Auto-resubscribe if VAPID key has rotated or was never tracked (web push only)
-  if (!IS_CAPACITOR && 'Notification' in window && Notification.permission === 'granted' && 'serviceWorker' in navigator && notifStatusEl) {
+  if ('Notification' in window && Notification.permission === 'granted' && 'serviceWorker' in navigator && notifStatusEl) {
     ;(async () => {
       try {
         const swReg = await navigator.serviceWorker.ready
@@ -3186,30 +3054,6 @@ function renderAdminSystem(el, integrations, vault, runs, jobs, imageGenModel, i
         setTimeout(() => { notifStatusEl.textContent = '' }, 3000)
       } catch { /* best-effort — don't surface errors for this background check */ }
     })()
-  }
-
-  // Wire up opacity slider (Electron only)
-  if (IS_ELECTRON) {
-    const opacitySlider = el.querySelector('#opacity-slider')
-    const opacityLabel  = el.querySelector('#opacity-label')
-    if (opacitySlider && opacityLabel) {
-      window.ki.loadConfig().then(cfg => {
-        const savedOpacity = cfg?.opacity ?? 0.62
-        opacitySlider.value = savedOpacity
-        opacityLabel.textContent = Math.round(savedOpacity * 100) + '%'
-      })
-      opacitySlider.addEventListener('input', () => {
-        const val = parseFloat(opacitySlider.value)
-        opacityLabel.textContent = Math.round(val * 100) + '%'
-        document.documentElement.style.setProperty('--bg-opacity', String(val))
-        window.ki.setBgOpacity(val)
-      })
-      opacitySlider.addEventListener('change', async () => {
-        const val = parseFloat(opacitySlider.value)
-        const cfg = (await window.ki.loadConfig()) || {}
-        window.ki.saveConfig({ ...cfg, opacity: val })
-      })
-    }
   }
 
   // Wire up image gen model save
@@ -3708,86 +3552,6 @@ async function triggerJournalDownload() {
     notice.textContent = `Failed to generate PDF: ${err.message}`
     notice.style.color = 'var(--error-color, #c04040)'
   }
-}
-
-// ── Capacitor push notifications ─────────────────────────────────────────────
-
-// Called from the enable-notifications button in the admin System tab when
-// running as a native iOS app. Requests APNs permission, registers, and sends
-// the device token to the backend so Ki can push to this device.
-async function _registerCapacitorPush(statusEl, statusValEl, enableBtn, disableBtn) {
-  const PushNotifications = window.Capacitor?.Plugins?.PushNotifications
-  if (!PushNotifications) {
-    if (statusEl) statusEl.textContent = 'Push Notifications plugin not available'
-    if (enableBtn) enableBtn.disabled = false
-    return
-  }
-  try {
-    const permResult = await PushNotifications.requestPermissions()
-    if (permResult.receive !== 'granted') {
-      if (statusEl) statusEl.textContent = 'Permission denied — go to iOS Settings → Notifications → Ki to enable'
-      if (statusValEl) { statusValEl.textContent = 'Blocked'; statusValEl.style.color = 'var(--danger,#c0392b)' }
-      if (enableBtn) { enableBtn.textContent = 'Blocked — enable in iOS Settings'; enableBtn.disabled = false }
-      return
-    }
-    if (statusEl) statusEl.textContent = 'Registering with APNs…'
-    const onReg = async ({ value: token }) => {
-      try {
-        const res = await apiFetch('/push/apns-token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token }),
-        })
-        if (!res.ok) throw new Error(`Server error: HTTP ${res.status}`)
-        localStorage.setItem('ki-apns-registered', '1')
-        localStorage.setItem('ki-apns-token', token)
-        if (statusValEl) { statusValEl.textContent = '✓ APNs registered'; statusValEl.style.color = 'var(--success,#27ae60)' }
-        if (enableBtn) { enableBtn.textContent = 'Notifications enabled ✓'; enableBtn.style.display = 'none' }
-        if (disableBtn) disableBtn.style.display = ''
-        if (statusEl) { statusEl.textContent = 'APNs registered — push notifications active'; setTimeout(() => { statusEl.textContent = '' }, 4000) }
-      } catch (err) {
-        if (statusEl) statusEl.textContent = `Error saving token: ${err.message}`
-        if (enableBtn) enableBtn.disabled = false
-      }
-    }
-    const onRegErr = ({ error }) => {
-      if (statusEl) statusEl.textContent = `Registration failed: ${error}`
-      if (enableBtn) enableBtn.disabled = false
-    }
-    await PushNotifications.addListener('registration', onReg)
-    await PushNotifications.addListener('registrationError', onRegErr)
-    await PushNotifications.register()
-  } catch (err) {
-    if (statusEl) statusEl.textContent = `Error: ${err.message}`
-    if (enableBtn) enableBtn.disabled = false
-  }
-}
-
-// Called on every app launch when already registered. Re-registers to ensure
-// the backend always has the latest APNs token (tokens can rotate).
-async function _autoRegisterCapacitorPush() {
-  const PushNotifications = window.Capacitor?.Plugins?.PushNotifications
-  if (!PushNotifications) return
-  try {
-    const perm = await PushNotifications.checkPermissions()
-    if (perm.receive !== 'granted') return
-    await PushNotifications.addListener('registration', async ({ value: token }) => {
-      try {
-        await apiFetch('/push/apns-token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token }),
-        })
-        localStorage.setItem('ki-apns-registered', '1')
-        localStorage.setItem('ki-apns-token', token)
-      } catch { /* best-effort */ }
-    })
-    // When a push arrives while app is in foreground, trigger a message poll
-    await PushNotifications.addListener('pushNotificationReceived', () => {
-      if (typeof pollNewMessages === 'function') pollNewMessages()
-    })
-    await PushNotifications.register()
-  } catch { /* best-effort — don't break startup */ }
 }
 
 // ── Utility ───────────────────────────────────────────────────────────────────

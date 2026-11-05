@@ -1,7 +1,9 @@
 """
 curl tool — execute a curl command in a subprocess and return its output.
 
-Safety constraint: only commands that start with the word "curl" are accepted.
+Safety constraint: only commands that start with the word "curl" are accepted,
+and they are run directly (no shell), so `;`, `|`, `&&`, `$(...)` etc. are passed
+to curl as literal arguments rather than executed.
 Timeout: 15 seconds.
 """
 import asyncio
@@ -17,14 +19,19 @@ async def run_curl(command: str) -> str:
     Execute a curl command and return JSON with stdout, stderr, and exit_code.
 
     - command must start with "curl" (case-insensitive, leading whitespace stripped).
-    - Runs in a subprocess via asyncio.create_subprocess_shell.
+    - Parsed with shlex and run via asyncio.create_subprocess_exec (no shell).
     - Times out after TIMEOUT_SECONDS seconds.
     - Returns a JSON-encoded dict: {"stdout": "...", "stderr": "...", "exit_code": N}
     """
     stripped = command.strip()
 
+    try:
+        argv = shlex.split(stripped)
+    except ValueError as e:
+        return json.dumps({"stdout": "", "stderr": f"Rejected: could not parse command ({e}).", "exit_code": 1})
+
     # Safety: only allow commands that start with "curl"
-    first_token = shlex.split(stripped)[0] if stripped else ""
+    first_token = argv[0] if argv else ""
     if first_token.lower() != "curl":
         return json.dumps({
             "stdout": "",
@@ -35,8 +42,8 @@ async def run_curl(command: str) -> str:
     print(f"[curl] running: {stripped[:200]}")
 
     try:
-        proc = await asyncio.create_subprocess_shell(
-            stripped,
+        proc = await asyncio.create_subprocess_exec(
+            "curl", *argv[1:],
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
