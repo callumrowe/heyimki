@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+# ki — manage a Ki stack, on this machine or on a server over SSH.
+#
+# Local (default): commands run against the stack in this repo.
+# Remote: set KI_HOST (or write it to .ki-host at the repo root), plus
+#   KI_SSH_USER   (default: root)
+#   KI_REMOTE_DIR (default: ~/ki) — where this repo is cloned on the server
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+HOST_FILE="$REPO_ROOT/.ki-host"
+
+HOST="${KI_HOST:-}"
+if [[ -z "$HOST" && -f "$HOST_FILE" ]]; then
+  HOST=$(tr -d '[:space:]' < "$HOST_FILE")
+fi
+SSH_USER="${KI_SSH_USER:-root}"
+REMOTE_DIR="${KI_REMOTE_DIR:-~/ki}"
+
+# Run a shell command in the repo directory — locally, or on the server.
+_run() {
+  if [[ -n "$HOST" ]]; then
+    ssh -t "$SSH_USER@$HOST" "cd $REMOTE_DIR && $*"
+  else
+    (cd "$REPO_ROOT" && bash -c "$*")
+  fi
+}
+
+# Call an api endpoint from inside the api container (secrets come from its env).
+_api() {
+  _run "docker compose exec -T api python3 -m src.cli_call $1 $2"
+}
+
+_psql() {
+  _run "docker compose exec -T postgres psql -U agent agent $*"
+}
+
+CMD="${1:-help}"
+shift || true
+
+case "$CMD" in
+
+  # --- Stack ----------------------------------------------------------------
+  up)       _run "docker compose up --build -d ${1:-}" ;;
+  down)     _run "docker compose down" ;;
+  restart)  _run "docker compose up --build -d ${1:-}" ;;
+  ps)       _run "docker compose ps" ;;
+  logs)
+    if [[ -n "${1:-}" ]]; then _run "docker compose logs -f --tail 200 $1"
+    else _run "docker compose logs -f --tail 200"
+    fi
+    ;;
+
+  update|deploy)
+    _run 'set -e
+      echo "[update] pulling latest..."
+      git pull --rebase
+      echo "[update] rebuilding..."
+      CACHEBUST=$(date +%s) docker compose up --build -d
+      echo "[update] waiting for the api..."
+      for i in $(seq 1 40); do
+        sleep 3
+        if docker compose exec -T api python3 -c "import urllib.request; urllib.request.urlopen(\"http://localhost:8000/health\", timeout=3)" >/dev/null 2>&1; then
+          echo "[update] healthy ($(git rev-parse --short HEAD))"; exit 0
+        fi
+      done
+      echo "[update] api did not become healthy — check: docker compose logs api"; exit 1'
+    ;;
+
+  # --- Actions --------------------------------------------------------------
+  heartbeat)    echo "Triggering heartbeat..."; _api POST /heartbeat/trigger ;;
+  todays-note)  echo "Creating today's daily note..."; _api POST /daily-note/create ;;
+  reindex)
+    echo "Forcing a full vault reindex on next start..."
+    _psql "-c \"DELETE FROM indexer_state WHERE key = 'vault_commit';\""
+    _run "docker compose restart api"
+    ;;
+  whatsapp|whatsapp-qr)
+    # Interactive: shows the QR code, then learns your chat ID. --new-account
+    # forgets the linked account first.
+    _run "scripts/link-whatsapp.sh ${1:-}"
+    ;;
+
+  # --- Data -----------------------------------------------------------------
+  integrations) _api GET /integrations ;;
+  usage)        _api GET /usage ;;
+  state)        _api GET /admin/state ;;
+  memories)
+    if [[ -n "${1:-}" ]]; then
+      _psql "-c \"SELECT category, content, updated_at FROM memories WHERE category = '${1//\'/}' ORDER BY updated_at DESC;\""
+    else
+      _psql "-c \"SELECT category, content, updated_at FROM memories ORDER BY updated_at DESC LIMIT 50;\""
+    fi
+    ;;
+  db)
+    if [[ -z "${1:-}" ]]; then echo "Usage: ki db '<sql>'"; exit 1; fi
+    printf '%s\n' "$1" | { if [[ -n "$HOST" ]]; then ssh "$SSH_USER@$HOST" "cd $REMOTE_DIR && docker compose exec -T postgres psql -U agent agent"; else (cd "$REPO_ROOT" && docker compose exec -T postgres psql -U agent agent); fi; }
+    ;;
+
+  # --- Remote helpers -------------------------------------------------------
+  phoenix)
+    if [[ -n "$HOST" ]]; then
+      echo "Tunnelling — Phoenix at http://localhost:6006  (Ctrl+C to stop)"
+      ssh -N -L 6006:localhost:6006 "$SSH_USER@$HOST"
+    else
+      echo "Phoenix is at http://localhost:6006"
+    fi
+    ;;
+  ssh)
+    if [[ -z "$HOST" ]]; then echo "Set KI_HOST (or .ki-host) first."; exit 1; fi
+    ssh "$SSH_USER@$HOST"
+    ;;
+
+  help|--help|-h)
+    cat <<'EOF'
+ki — manage your Ki stack
+
+STACK
+  ki up [service]       Build and start (all services, or one)
+  ki down               Stop everything
+  ki restart [service]  Rebuild and restart
+  ki logs [service]     Tail logs
+  ki ps                 Service status
+  ki update             git pull + rebuild + wait until healthy
+
+ACTIONS
+  ki heartbeat          Run the heartbeat now
+  ki todays-note        Create today's daily note now
+  ki reindex            Re-embed the whole vault
+  ki whatsapp [--new-account]
+                        Link WhatsApp (QR code, then your chat ID)
+
+DATA
+  ki integrations       Loaded integrations, tools and schedules
+  ki memories [cat]     Saved memories (preference / fact / person)
+  ki state              Latest heartbeat state
+  ki usage              Token usage and estimated cost
+  ki db '<sql>'         Run a SQL query
+
+REMOTE
+  ki phoenix            Open the Phoenix tracing UI (tunnels when remote)
+  ki ssh                Shell on the server
+
+Runs against this repo by default. To manage a server instead:
+  export KI_HOST=<server>   (or: echo <server> > .ki-host)
+  export KI_SSH_USER=root KI_REMOTE_DIR=~/ki   (defaults shown)
+EOF
+    ;;
+
+  *)
+    echo "Unknown command: $CMD — run 'ki help'"
+    exit 1
+    ;;
+esac

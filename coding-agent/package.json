@@ -1,0 +1,11 @@
+{
+  "name": "ki-coding-agent",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Agentic coding loop for Ki integration authoring",
+  "main": "src/server.js",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "express": "^4.21.0"
+  }
+}

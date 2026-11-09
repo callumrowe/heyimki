@@ -1,0 +1,55 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.env
+!*.env.example
+secrets/*
+!secrets/README.md
+
+# Your Obsidian vault, if you keep it inside this folder (the default)
+/vault/
+
+# Remote host for bin/ki
+.ki-host
+
+# Runtime data
+data/
+baileys/auth_info/
+tmp/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Build output
+dist/
+build/
+out/
+
+# Leftovers from the old native app wrappers
+ios/
+android/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Claude Code worktrees
+.claude/worktrees/

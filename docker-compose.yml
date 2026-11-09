@@ -1,0 +1,228 @@
+# Ki — self-hosted personal AI assistant.
+#
+# Configure everything in .env (run ./setup.sh to create it), then:
+#   docker compose up -d --build
+#
+# Optional parts are compose profiles, switched on with COMPOSE_PROFILES in .env:
+#   whatsapp      — WhatsApp gateway (Baileys). Pair by scanning a QR code.
+#   coding-agent  — lets Ki edit her own code. It works in its own clone of
+#                   this repo, with no Docker access; you confirm each deploy.
+#   https         — Caddy reverse proxy with automatic TLS for KI_DOMAIN (VPS use).
+
+name: ki
+
+networks:
+  ki_internal:
+    driver: bridge
+  # The coding agent's network: it can reach the api and the internet, but not
+  # Postgres, Qdrant, the browser or WhatsApp.
+  ki_agent:
+    driver: bridge
+
+volumes:
+  baileys_auth:
+  ki_workspace:   # the coding agent's own clone of the repo
+  ki_postgres:
+  ki_qdrant:
+  ki_phoenix:
+  caddy_data:
+  caddy_config:
+
+services:
+
+  # ── Postgres ─────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    volumes:
+      - ki_postgres:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=agent
+      - POSTGRES_PASSWORD=${DB_PASSWORD:?Set DB_PASSWORD in .env (run ./setup.sh)}
+      - POSTGRES_DB=agent
+    networks:
+      - ki_internal
+    mem_limit: 256m
+
+  # ── Qdrant vector store ───────────────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    volumes:
+      - ki_qdrant:/qdrant/storage
+    networks:
+      - ki_internal
+    mem_limit: 256m
+
+  # ── Headless Chromium for the browser tools (CDP on port 9222) ────────────
+  browser:
+    image: zenika/alpine-chrome:latest
+    entrypoint: chromium-browser
+    command:
+      - --no-sandbox
+      - --disable-setuid-sandbox
+      - --no-zygote
+      - --remote-debugging-address=0.0.0.0
+      - --remote-debugging-port=9222
+      - --remote-allow-origins=*
+      - --headless
+      - --disable-gpu
+      - --disable-software-rasterizer
+      - --disable-dev-shm-usage
+      - --disable-extensions
+      - --no-first-run
+      - --mute-audio
+      - --log-level=3
+      - --disable-logging
+      - about:blank
+    networks:
+      - ki_internal
+    restart: unless-stopped
+    shm_size: '2gb'
+
+  # ── Phoenix — LLM tracing UI (http://localhost:6006) ──────────────────────
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6006:6006"
+    volumes:
+      - ki_phoenix:/phoenix
+    environment:
+      - PHOENIX_WORKING_DIR=/phoenix
+    networks:
+      - ki_internal
+    mem_limit: 512m
+
+  # ── Agent brain + web app ─────────────────────────────────────────────────
+  api:
+    build: ./api
+    restart: unless-stopped
+    ports:
+      # Localhost only by default. On a VPS, use the `https` profile rather
+      # than exposing this port directly.
+      - "${KI_BIND_ADDRESS:-127.0.0.1}:${KI_PORT:-8000}:8000"
+    depends_on:
+      - postgres
+      - qdrant
+      - phoenix
+      - browser
+    volumes:
+      - ./api/src:/app/src            # bind-mounted so code edits apply on restart
+      - ./api/web:/app/web            # web app — edits are live immediately
+      - ./api/prompts:/app/prompts    # prompt files
+      - ${KI_VAULT_PATH:-./vault}:/vault
+      - ./secrets:/secrets:ro         # optional: vault_deploy_key for a private git vault
+      - ./:/repo                      # the checkout, so confirmed self-deploys can be applied
+    environment:
+      - PYTHONUNBUFFERED=1
+      - IN_DOCKER=True
+      - ANONYMIZED_TELEMETRY=false
+      - TZ=${USER_TZ:-UTC}
+      - USER_TZ=${USER_TZ:-UTC}
+      - USER_NAME=${USER_NAME:-}
+      - COMPOSE_PROFILES=${COMPOSE_PROFILES:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:?Set ANTHROPIC_API_KEY in .env}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:?Set OPENAI_API_KEY in .env}
+      - DATABASE_URL=postgresql+asyncpg://agent:${DB_PASSWORD}@postgres:5432/agent
+      - QDRANT_URL=http://qdrant:6333
+      - OBSIDIAN_VAULT_PATH=/vault
+      - VAULT_GIT_SYNC=${VAULT_GIT_SYNC:-auto}
+      - VAULT_SYNC_MINUTES=${VAULT_SYNC_MINUTES:-5}
+      # The vault is bind-mounted from the host, so its owner differs from the
+      # container user; tell git to trust it.
+      - GIT_CONFIG_COUNT=1
+      - GIT_CONFIG_KEY_0=safe.directory
+      - GIT_CONFIG_VALUE_0=*
+      - BAILEYS_URL=http://baileys:3000
+      - INTERNAL_SECRET=${INTERNAL_SECRET:?Set INTERNAL_SECRET in .env}
+      - DESKTOP_SECRET=${DESKTOP_SECRET:?Set DESKTOP_SECRET in .env}
+      - CODING_AGENT_URL=http://coding-agent:3002
+      - CODING_AGENT_SECRET=${CODING_AGENT_SECRET:-}
+      - HEARTBEAT_HOURS=${HEARTBEAT_HOURS:-3}
+      - HEARTBEAT_QUIET_START=${HEARTBEAT_QUIET_START:-22}
+      - HEARTBEAT_QUIET_END=${HEARTBEAT_QUIET_END:-7}
+      - SESSION_GAP_HOURS=${SESSION_GAP_HOURS:-0.5}
+      - YOUR_WHATSAPP_JID=${YOUR_WHATSAPP_JID:-}
+      # Optional integrations — each one switches on when its key is set
+      - BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY:-}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITHUB_REPO=${GITHUB_REPO:-}
+      - VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY:-}
+      - VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY:-}
+      - VAPID_SUBJECT=${VAPID_SUBJECT:-mailto:you@example.com}
+      - OP_SERVICE_ACCOUNT_TOKEN=${OP_SERVICE_ACCOUNT_TOKEN:-}
+      - OP_DISABLE_UPDATE_CHECK=true
+      - OP_CONFIG_DIR=/app/.op-config
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-}
+      - BROWSER_CDP_URL=http://browser:9222
+    networks:
+      - ki_internal
+      - ki_agent
+    mem_limit: 1g
+    shm_size: '512m'
+
+  # ── WhatsApp gateway (profile: whatsapp) ──────────────────────────────────
+  baileys:
+    profiles: ["whatsapp"]
+    build:
+      context: ./baileys
+      args:
+        CACHEBUST: "${CACHEBUST:-0}"
+    restart: unless-stopped
+    depends_on:
+      - api
+    volumes:
+      - baileys_auth:/app/auth_info
+      - ./baileys/src:/app/src
+    environment:
+      - AGENT_API_URL=http://api:8000
+      - ALLOWED_JID=${YOUR_WHATSAPP_JID:-}
+      - INTERNAL_SECRET=${INTERNAL_SECRET}
+    networks:
+      - ki_internal
+    mem_limit: 256m
+
+  # ── Coding agent — self-modification (profile: coding-agent) ──────────────
+  # Runs Claude Code in its own clone of this repo. It sees only the repo's
+  # .git, read-only (no .env, secrets or vault), has no Docker access, and
+  # shares a network with the api alone. The api applies its work to this
+  # checkout when you confirm a deploy.
+  coding-agent:
+    profiles: ["coding-agent"]
+    build: ./coding-agent
+    restart: unless-stopped
+    volumes:
+      - ./.git:/src.git:ro
+      - ki_workspace:/workspace
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - CODING_AGENT_SECRET=${CODING_AGENT_SECRET:-}
+    networks:
+      - ki_agent
+    mem_limit: 1g
+
+  # ── HTTPS reverse proxy (profile: https) ──────────────────────────────────
+  # Point a DNS A record for KI_DOMAIN at this server, open ports 80 and 443,
+  # and Caddy fetches a Let's Encrypt certificate automatically.
+  caddy:
+    profiles: ["https"]
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - KI_DOMAIN=${KI_DOMAIN:-}
+    networks:
+      - ki_internal

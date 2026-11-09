@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0a0a0a">
+  <title>Ki — Knows your life. Handles it.</title>
+  <style>
+    *, *::before, *::after {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      --bg: #0a0a0a;
+      --bg2: #0f0f0f;
+      --card: #111111;
+      --border: #1c1c1c;
+      --border-hover: #2a2a2a;
+      --text: #e4e4e4;
+      --muted: #555;
+      --dim: #333;
+      --accent: #7ee8c8;
+      --accent-dim: rgba(126, 232, 200, 0.08);
+      --accent-glow: rgba(126, 232, 200, 0.15);
+      --scanner: rgba(126, 232, 200, 0.6);
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      overflow-x: hidden;
+    }
+
+    /* ── Nav ─────────────────────────────────────────────── */
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1.25rem 2.5rem;
+      background: rgba(10, 10, 10, 0.85);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .nav-logo {
+      font-size: 1.4rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      color: var(--text);
+      text-decoration: none;
+    }
+
+    .nav-link {
+      font-size: 0.875rem;
+      color: var(--muted);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+
+    .nav-link:hover {
+      color: var(--text);
+    }
+
+    /* ── Hero ────────────────────────────────────────────── */
+    .hero {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 8rem 1.5rem 6rem;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: 20%;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 600px;
+      height: 600px;
+      background: radial-gradient(circle, rgba(126, 232, 200, 0.04) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .hero-wordmark {
+      font-size: clamp(5rem, 18vw, 10rem);
+      font-weight: 800;
+      letter-spacing: -0.05em;
+      line-height: 1;
+      color: var(--text);
+      margin-bottom: 0.5rem;
+      position: relative;
+      animation: wordmark-glow 5s ease-in-out infinite;
+    }
+
+    @keyframes wordmark-glow {
+      0%, 100% { text-shadow: 0 0 60px rgba(126, 232, 200, 0.12); }
+      50%       { text-shadow: 0 0 120px rgba(126, 232, 200, 0.28); }
+    }
+
+    .hero-tagline {
+      font-size: clamp(1.3rem, 3.5vw, 2rem);
+      font-weight: 500;
+      color: var(--text);
+      letter-spacing: -0.02em;
+      margin-bottom: 1.25rem;
+    }
+
+    .hero-sub {
+      font-size: clamp(0.95rem, 1.8vw, 1.1rem);
+      color: var(--muted);
+      max-width: 540px;
+      line-height: 1.7;
+    }
+
+    /* KITT scanner */
+    .scanner-wrap {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      overflow: hidden;
+    }
+
+    .scanner-line {
+      height: 100%;
+      width: 40%;
+      background: linear-gradient(90deg, transparent, var(--scanner), transparent);
+      animation: scan 4s ease-in-out infinite;
+    }
+
+    @keyframes scan {
+      0%   { transform: translateX(-100%); }
+      100% { transform: translateX(350%); }
+    }
+
+    /* ── Section shell ───────────────────────────────────── */
+    section {
+      padding: 6rem 1.5rem;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    .section-label {
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 1rem;
+    }
+
+    .section-title {
+      font-size: clamp(1.6rem, 4vw, 2.6rem);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      color: var(--text);
+      margin-bottom: 1rem;
+    }
+
+    .section-sub {
+      font-size: 1.05rem;
+      color: var(--muted);
+      max-width: 520px;
+      margin-bottom: 3.5rem;
+    }
+
+    /* ── Features grid ───────────────────────────────────── */
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 1px;
+      background: var(--border);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+    }
+
+    .feature-card {
+      background: var(--card);
+      padding: 2rem;
+      transition: background 0.2s;
+    }
+
+    .feature-card:hover {
+      background: #141414;
+    }
+
+    .feature-icon {
+      font-size: 1.6rem;
+      margin-bottom: 0.875rem;
+      display: block;
+    }
+
+    .feature-title {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 0.4rem;
+      letter-spacing: -0.01em;
+    }
+
+    .feature-desc {
+      font-size: 0.875rem;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    /* ── Divider ─────────────────────────────────────────── */
+    .divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 0 1.5rem;
+    }
+
+    /* ── Different section ───────────────────────────────── */
+    .diff-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+    }
+
+    .diff-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 1.25rem;
+      padding: 1.5rem 2rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--card);
+      transition: background 0.2s;
+    }
+
+    .diff-item:last-child {
+      border-bottom: none;
+    }
+
+    .diff-item:hover {
+      background: #141414;
+    }
+
+    .diff-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      flex-shrink: 0;
+      margin-top: 0.55rem;
+    }
+
+    .diff-text {
+      font-size: 1rem;
+      color: var(--text);
+      font-weight: 500;
+      letter-spacing: -0.01em;
+    }
+
+    .diff-detail {
+      font-size: 0.875rem;
+      color: var(--muted);
+      margin-top: 0.2rem;
+    }
+
+    /* ── Surfaces section ────────────────────────────────── */
+    .surfaces-grid {
+      display: grid;
+      grid-template-columns: 2fr 1fr 1fr;
+      gap: 1px;
+      background: var(--border);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+    }
+
+    .surface-card {
+      background: var(--card);
+      padding: 2rem;
+      transition: background 0.2s;
+    }
+
+    .surface-card:hover {
+      background: #141414;
+    }
+
+    .surface-card.primary {
+      background: #0d1512;
+    }
+
+    .surface-card.primary:hover {
+      background: #101a16;
+    }
+
+    .surface-tag {
+      font-size: 0.65rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 0.75rem;
+    }
+
+    .surface-name {
+      font-size: 1.15rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 0.4rem;
+      letter-spacing: -0.02em;
+    }
+
+    .surface-desc {
+      font-size: 0.875rem;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    /* ── Footer ──────────────────────────────────────────── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 2.5rem 2.5rem;
+      text-align: center;
+    }
+
+    .footer-text {
+      font-size: 0.8rem;
+      color: var(--dim);
+      letter-spacing: 0.01em;
+    }
+
+    /* ── Responsive ──────────────────────────────────────── */
+    @media (max-width: 600px) {
+      nav {
+        padding: 1rem 1.25rem;
+      }
+
+      .features-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .surfaces-grid {
+        grid-template-columns: 1fr;
+      }
+
+      section {
+        padding: 4rem 1.25rem;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Nav -->
+  <nav>
+    <a href="/" class="nav-logo">Ki</a>
+  </nav>
+
+  <!-- Hero -->
+  <div class="hero">
+    <div class="hero-wordmark">Ki</div>
+    <p class="hero-tagline">Knows your life. Handles it.</p>
+    <p class="hero-sub">Ki is a personal assistant built for one person. Not a product. Not a chatbot. Runs on your own server, remembers everything, and shows up before you have to ask.</p>
+    <div class="scanner-wrap">
+      <div class="scanner-line"></div>
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <!-- What Ki does -->
+  <section id="features">
+    <div class="section-label">What Ki does</div>
+    <h2 class="section-title">Carries the mental load.</h2>
+    <p class="section-sub">The things you'd normally have to track, remember, chase up, and follow through on — Ki handles them.</p>
+
+    <div class="features-grid">
+      <div class="feature-card">
+        <span class="feature-icon">🧠</span>
+        <div class="feature-title">Remembers everything</div>
+        <p class="feature-desc">Ki remembers facts, preferences, context, and history. Tell her something once. It won't be forgotten — and Ki will use it at exactly the right moment.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon">📓</span>
+        <div class="feature-title">Vault</div>
+        <p class="feature-desc">Reads and writes your Obsidian vault. Notes, todos, ideas — captured mid-conversation, filed where they belong, no copy-pasting required.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon">⚡</span>
+        <div class="feature-title">Custom integrations</div>
+        <p class="feature-desc">Need something Ki doesn't do yet? Just ask. Ki will build the integration and deploy it. No engineers. No tickets. No waiting.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon">📅</span>
+        <div class="feature-title">Reminders</div>
+        <p class="feature-desc">Just tell her in plain English. You'll get a message when the moment comes — through the same thread you're already in.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon">🌐</span>
+        <div class="feature-title">Browser</div>
+        <p class="feature-desc">Ki can open a browser, do the research, fill the form, and report back. You describe what you need. Ki figures out how.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon">✉️</span>
+        <div class="feature-title">Email</div>
+        <p class="feature-desc">Reads your inbox, cuts the noise, and tells you what actually needs your attention. Works with HEY and other clients.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon">🔧</span>
+        <div class="feature-title">Self-modifying</div>
+        <p class="feature-desc">Ki can write new integrations, update its own prompts, and extend its own capabilities — when you ask. Fully self-modifying.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon">💬</span>
+        <div class="feature-title">Proactive</div>
+        <p class="feature-desc">A heartbeat runs every few hours. Ki checks what's on your plate and messages you if something's worth surfacing — before you have to think of it.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider">
+
+  <!-- Surfaces -->
+  <section id="surfaces">
+    <div class="section-label">Surfaces</div>
+    <h2 class="section-title">Wherever you need it.</h2>
+    <p class="section-sub">A native Mac app for real work. WhatsApp for the moments in between. A CLI when you want raw access.</p>
+
+    <div class="surfaces-grid">
+      <div class="surface-card primary">
+        <div class="surface-tag">Primary</div>
+        <div class="surface-name">Mac App</div>
+        <p class="surface-desc">The full Ki experience. Streaming responses, full conversation history, and your WhatsApp context pulled in automatically. This is where the real work happens.</p>
+      </div>
+      <div class="surface-card">
+        <div class="surface-tag">Secondary</div>
+        <div class="surface-name">WhatsApp</div>
+        <p class="surface-desc">Quick questions, voice messages, on-the-go tasks, and proactive nudges from Ki — in the app that's already on your phone.</p>
+      </div>
+      <div class="surface-card">
+        <div class="surface-tag">Also available</div>
+        <div class="surface-name">CLI</div>
+        <p class="surface-desc">Direct access to the stack. Manage, query, trigger — from the command line.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider">
+
+  <!-- How it's different -->
+  <section id="different">
+    <div class="section-label">Why Ki is different</div>
+    <h2 class="section-title">Built for one. Not a million.</h2>
+    <p class="section-sub">Every AI product on the market is optimised for the average user. Ki is optimised for you.</p>
+
+    <ul class="diff-list">
+      <li class="diff-item">
+        <div class="diff-dot"></div>
+        <div>
+          <div class="diff-text">Yours, not everyone's</div>
+          <div class="diff-detail">No product roadmap. No feature requests. No waiting for the next update. Ki is shaped around one person — and that person is you.</div>
+        </div>
+      </li>
+      <li class="diff-item">
+        <div class="diff-dot"></div>
+        <div>
+          <div class="diff-text">Actually has a personality</div>
+          <div class="diff-detail">Warm, direct, occasionally sweary. Ki has opinions, pushes back when it's worth it, and notices things without being asked. Not a yes machine.</div>
+        </div>
+      </li>
+      <li class="diff-item">
+        <div class="diff-dot"></div>
+        <div>
+          <div class="diff-text">Shows up first</div>
+          <div class="diff-detail">A heartbeat runs around the clock. Ki checks your open loops, upcoming commitments, and anything worth flagging — and messages you before you have to think about it.</div>
+        </div>
+      </li>
+      <li class="diff-item">
+        <div class="diff-dot"></div>
+        <div>
+          <div class="diff-text">Your data never leaves your server</div>
+          <div class="diff-detail">Self-hosted, private, yours. No third party logging your conversations, mining your context, or reading your notes.</div>
+        </div>
+      </li>
+      <li class="diff-item">
+        <div class="diff-dot"></div>
+        <div>
+          <div class="diff-text">Builds its own tools</div>
+          <div class="diff-detail">When Ki needs a new capability, it writes it and ships it. You describe what you want. Done.</div>
+        </div>
+      </li>
+    </ul>
+  </section>
+
+  <hr class="divider">
+
+  <!-- The tech -->
+  <section id="tech">
+    <div class="section-label">Under the hood</div>
+    <h2 class="section-title">Your server. Your data. Full stop.</h2>
+    <p class="section-sub">Ki runs on infrastructure you control. Nothing is shared with third parties. Your conversations, your memory, your notes — all private.</p>
+
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <p class="footer-text">Ki — a personal AI, actually personal.</p>
+  </footer>
+
+</body>
+</html>
