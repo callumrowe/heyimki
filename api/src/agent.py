@@ -1097,10 +1097,12 @@ async def _build_system(
         static_system += "\n\n" + _render_prompt(
             (Path(__file__).parent.parent / "prompts" / "coding_agent.md").read_text(encoding="utf-8").strip()
         )
-    return [
-        {"type": "text", "text": static_system, "cache_control": {"type": "ephemeral"}},
-        {"type": "text", "text": dynamic, "cache_control": {"type": "ephemeral"}},
-    ]
+    blocks = [{"type": "text", "text": static_system, "cache_control": {"type": "ephemeral"}}]
+    # A fresh install has no memories, heartbeat or vault hits yet, so the dynamic
+    # block can be empty — and the API rejects cache_control on an empty text block.
+    if dynamic.strip():
+        blocks.append({"type": "text", "text": dynamic.strip(), "cache_control": {"type": "ephemeral"}})
+    return blocks
 
 
 async def _transcribe_audio(data: str, mime_type: str) -> str:
