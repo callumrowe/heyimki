@@ -46,7 +46,9 @@ services:
 
   # ── Qdrant vector store ───────────────────────────────────────────────────
   qdrant:
-    image: qdrant/qdrant:latest
+    # Pinned: qdrant-client in api/requirements.txt must stay within one minor
+    # version of the server. Bump both together.
+    image: qdrant/qdrant:v1.15.5
     restart: unless-stopped
     volumes:
       - ki_qdrant:/qdrant/storage
@@ -82,7 +84,9 @@ services:
 
   # ── Phoenix — LLM tracing UI (http://localhost:6006) ──────────────────────
   phoenix:
-    image: arizephoenix/phoenix:latest
+    # Pinned so a new release can't change behaviour under us (21.x turned auth on
+    # by default for non-loopback hosts, which broke trace export with a 401).
+    image: arizephoenix/phoenix:21.0.0
     restart: unless-stopped
     ports:
       - "127.0.0.1:6006:6006"
@@ -90,6 +94,9 @@ services:
       - ki_phoenix:/phoenix
     environment:
       - PHOENIX_WORKING_DIR=/phoenix
+      # The api exports traces without credentials. The port is bound to
+      # 127.0.0.1, and on a server you reach it through `bin/ki phoenix`.
+      - PHOENIX_ENABLE_AUTH=false
     networks:
       - ki_internal
     mem_limit: 512m

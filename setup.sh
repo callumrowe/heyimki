@@ -49,12 +49,17 @@ dim "Ki reads and writes an Obsidian vault. Point her at yours, or press Enter"
 dim "to start with a fresh example vault in ./vault."
 KI_VAULT_PATH="$(ask "Path to your Obsidian vault" "./vault")"
 KI_VAULT_PATH="${KI_VAULT_PATH/#\~/$HOME}"
-if [[ "$KI_VAULT_PATH" == "./vault" && ! -d vault ]]; then
-  cp -R examples/vault vault
-  find vault -name .gitkeep -delete
-  echo "Created ./vault from examples/vault."
-elif [[ ! -d "$KI_VAULT_PATH" ]]; then
-  fail "No folder at $KI_VAULT_PATH."
+if [[ ! -d "$KI_VAULT_PATH" ]]; then
+  # The default needs no confirmation; any other missing path gets asked about.
+  if [[ "$KI_VAULT_PATH" == "./vault" ]] \
+     || yes_no "No folder at $KI_VAULT_PATH. Create it from the example vault?" y; then
+    mkdir -p "$(dirname "$KI_VAULT_PATH")"
+    cp -R examples/vault "$KI_VAULT_PATH"
+    find "$KI_VAULT_PATH" -name .gitkeep -delete
+    echo "Created $KI_VAULT_PATH from examples/vault."
+  else
+    fail "No folder at $KI_VAULT_PATH. Create it, or run setup again with another path."
+  fi
 fi
 if [[ ! -f "$KI_VAULT_PATH/templates/daily.md" ]]; then
   warn "No templates/daily.md in your vault — copy examples/vault/templates/daily.md there"
