@@ -218,6 +218,81 @@ def _build_verified_open_set(vault_contents: list[str]) -> set[str]:
     return verified
 
 
+_WORD_RE = re.compile(r'\b\w{4,}\b')
+
+
+def _significant_words(s: str) -> set[str]:
+    return {w.lower() for w in _WORD_RE.findall(s)}
+
+
+# Words the model adds around a todo ("— due 2026-11-10, been open since…")
+# that say nothing about which todo it is.
+_TODO_FILLER = {"open", "todo", "overdue", "since", "been", "still", "with", "from", "that", "this", "today", "tomorrow"}
+_TODO_WORD_RE = re.compile(r"[a-z]{4,}")
+
+
+def _todo_words(s: str) -> set[str]:
+    s = re.sub(r'^Open todo \(\d{4}-\d{2}-\d{2}\):\s*', '', s, flags=re.IGNORECASE).lower()
+    return {w for w in _TODO_WORD_RE.findall(s) if w not in _TODO_FILLER}
+
+
+def _todo_matches_any(item: str, todos: set[str]) -> bool:
+    """True if *item* (the model's wording) refers to one of *todos* (vault wording).
+
+    The model rewords todos — "Book physio for the hip — due 2026-11-11, open 5
+    days" for "Book physio for the hip (2026-11-11)" — so compare words, not
+    substrings. A match needs at least two shared words (or the whole of a
+    one-word todo) covering 60% of either side.
+    """
+    item_words = _todo_words(item)
+    if not item_words:
+        return False
+    for todo in todos:
+        todo_words = _todo_words(todo)
+        if not todo_words:
+            continue
+        overlap = len(item_words & todo_words)
+        if overlap < min(2, len(todo_words)):
+            continue
+        if overlap / len(todo_words) >= 0.6 or overlap / len(item_words) >= 0.6:
+            return True
+    return False
+
+
+def _load_task_config() -> dict | None:
+    from .tools.obsidian import _parse_task_config
+    vault_path = os.environ.get("OBSIDIAN_VAULT_PATH", "/vault")
+    config_path = Path(vault_path) / "config" / "task-config.yaml"
+    if not config_path.exists():
+        return None
+    try:
+        config = _parse_task_config(config_path.read_text(errors="replace"))
+    except Exception as e:
+        print(f"[heartbeat] task config read failed (non-fatal): {e}")
+        return None
+    return config if isinstance(config, dict) else None
+
+
+def _scheduled_task_names() -> set[str]:
+    """Every task in task-config.yaml, lowercased. These aren't daily-note
+    checkboxes, so the open-todo guard must not treat them as completed."""
+    config = _load_task_config() or {}
+    names: set[str] = set()
+    for key in ("daily", "weekdays"):
+        names.update(t for t in (config.get(key) or []) if isinstance(t, str))
+    for entry in (config.get("weekly") or []) + (config.get("interval") or []):
+        if isinstance(entry, dict) and entry.get("task"):
+            names.add(entry["task"])
+    for key in ("fortnightly", "biweekly"):
+        section = config.get(key)
+        if isinstance(section, dict):
+            for item in (section.get("tasks") or []):
+                name = item.get("task") if isinstance(item, dict) else item
+                if isinstance(name, str) and name:
+                    names.add(name)
+    return {n.lower() for n in names}
+
+
 async def _fetch_scheduled_tasks_due() -> str:
     """
     Read task-config.yaml from the vault and return a formatted block
@@ -230,23 +305,10 @@ async def _fetch_scheduled_tasks_due() -> str:
         if _dt.now(USER_TZ).date() < SCHEDULED_TASKS_PAUSED_UNTIL:
             return ""
 
-    import os as _os
-    import re as _re
-    from pathlib import Path as _Path
-    from .tools.obsidian import _parse_task_config, _parse_interval_days, _try_parse_date
+    from .tools.obsidian import _parse_interval_days, _try_parse_date
 
-    vault_path = _os.environ.get("OBSIDIAN_VAULT_PATH", "/vault")
-    config_path = _Path(vault_path) / "config" / "task-config.yaml"
-    if not config_path.exists():
-        return ""
-
-    try:
-        config_text = config_path.read_text(errors="replace")
-        config = _parse_task_config(config_text)
-        if not config or not isinstance(config, dict):
-            return ""
-    except Exception as e:
-        print(f"[heartbeat] task config read failed (non-fatal): {e}")
+    config = _load_task_config()
+    if not config:
         return ""
 
     today_local = datetime.now(USER_TZ).date()
@@ -497,17 +559,14 @@ async def _synthesise(
     # forward from prev state.  We have the verified live set from _fetch_vault_todos;
     # any open_todo / backlog_todo whose text does NOT appear there is treated as done.
     #
-    # Match strategy: case-insensitive substring — an open_todos entry like
-    # "Book dentist appointment" matches a vault content string like
-    # "Open todo (2025-01-15): Book dentist appointment".
+    # Match strategy: word overlap (_todo_matches_any), because the model rewords
+    # todos and appends dates. Scheduled tasks from task-config.yaml count as open.
     if vault_contents:
-        verified_open = _build_verified_open_set(vault_contents)
+        verified_open = _build_verified_open_set(vault_contents) | _scheduled_task_names()
         evicted_open = []
         kept_open = []
         for item in state.get("open_todos", []):
-            # Accept the item if any verified open todo contains its text (case-insensitive).
-            item_lower = item.lower()
-            if any(item_lower in v or v in item_lower for v in verified_open):
+            if _todo_matches_any(item, verified_open):
                 kept_open.append(item)
             else:
                 evicted_open.append(item)
@@ -522,8 +581,7 @@ async def _synthesise(
         evicted_backlog = []
         kept_backlog = []
         for item in state.get("backlog_todos", []):
-            item_lower = item.lower()
-            if any(item_lower in v or v in item_lower for v in verified_open):
+            if _todo_matches_any(item, verified_open):
                 kept_backlog.append(item)
             else:
                 evicted_backlog.append(item)
@@ -550,11 +608,6 @@ async def _synthesise(
         # significantly with ANY previously-known vault todo BUT it's not in
         # verified_open → evict.  We use the vault_contents list for the
         # "was ever a vault todo" check and verified_open for the "still open" check.
-        _word_re = re.compile(r'\b\w{4,}\b')
-
-        def _significant_words(s: str) -> set[str]:
-            return {w.lower() for w in _word_re.findall(s)}
-
         def _is_verified_open_todo(item: str) -> bool:
             """Return True if item overlaps with any verified-open vault todo."""
             item_words = _significant_words(item)
@@ -742,6 +795,49 @@ async def _synthesise(
     return state
 
 
+async def _rewrite_proactive(items: list[str]) -> str | None:
+    """Write the proactive message from *items* when the synthesis's own message
+    was dropped by a post-synthesis guard. Returns None if the call fails, so
+    the caller skips the nudge instead of sending a raw list."""
+    from .config import render
+    today_date = datetime.now(USER_TZ).date()
+    today = today_date.strftime("%A, %d %B %Y")
+
+    # Spell out dates so the model doesn't do weekday arithmetic (it gets it wrong).
+    def _humanise(m: re.Match) -> str:
+        try:
+            d = date_type.fromisoformat(m.group(0))
+        except ValueError:
+            return m.group(0)
+        delta = (d - today_date).days
+        rel = {0: " (today)", 1: " (tomorrow)", -1: " (yesterday)"}.get(delta, "")
+        return f"{d.strftime('%A')} {d.day} {d.strftime('%B')}{rel}"
+
+    items = [re.sub(r"\d{4}-\d{2}-\d{2}", _humanise, t) for t in items]
+    prompt = render(
+        "You are Ki, {{USER_NAME}}'s personal assistant: warm, direct, dry wit, Kiwi/Australian. "
+        f"Today is {today}. Write a short, natural check-in message to {{{{USER_NAME}}}} that raises the "
+        "things below. Lead with the most urgent. Plain text, no lists, no bullets, no markdown, "
+        "no greeting preamble. Turn ISO dates into natural words relative to today. "
+        "Something is only overdue if its due date is before today; \"open since\" is not a due date. "
+        "Don't add facts that aren't in the list. "
+        "Reply with the message only.\n\n"
+        + "\n".join(f"- {t}" for t in items)
+    )
+    try:
+        resp = await _client.messages.create(
+            model=HAIKU,
+            max_tokens=400,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        await mem.log_token_usage(HAIKU, resp.usage.input_tokens, resp.usage.output_tokens, use_case="heartbeat")
+        text = resp.content[0].text.strip()
+        return text or None
+    except Exception as e:
+        print(f"[heartbeat] proactive rewrite failed: {e}")
+        return None
+
+
 async def _send_proactive(text: str) -> None:
     # Ki app is primary — always deliver here first
     await mem.save_turn(user="", assistant=text, channel="desktop")
@@ -885,7 +981,12 @@ async def run_heartbeat(hours: int = 3) -> dict:
         if not cooldown_ok:
             print(f"[heartbeat] proactive skipped — cooldown active (last sent: {last_sent})")
         else:
-            message = state.get("proactive_message") or "\n".join(f"• {t}" for t in state["things_to_mention"])
+            # The guards above null proactive_message when they drop items it may
+            # mention. Rewrite it from what's left rather than sending a raw list.
+            message = state.get("proactive_message") or await _rewrite_proactive(state["things_to_mention"])
+            if not message:
+                print("[heartbeat] proactive skipped — no message to send")
+                return state
             try:
                 await _send_proactive(message)
                 state["proactive_sent_at"] = datetime.now(USER_TZ).isoformat()
